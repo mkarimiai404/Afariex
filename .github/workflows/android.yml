@@ -23,10 +23,13 @@ jobs:
 
       - run: npm install
 
+      - name: Fix Hermesc Permissions
+        run: chmod +x ./node_modules/react-native/sdks/hermesc/linux64-bin/hermesc
+
       - run: chmod +x android/gradlew
 
       - run: cd android && ./gradlew assembleRelease
-
+      
       - uses: actions/upload-artifact@v4
         with:
           name: app-release
