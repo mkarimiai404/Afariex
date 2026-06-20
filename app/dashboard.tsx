@@ -1,9 +1,13 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView, SafeAreaView, Dimensions } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Dimensions } from 'react-native';
 import { useRouter, Stack } from 'expo-router';
+import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { SafeAreaView } from 'react-native-safe-area-context';
+
+import { fetchJson } from '@/lib/api';
+import { useAuth } from '@/lib/auth-context';
 
 const { width } = Dimensions.get('window');
 
@@ -21,53 +25,78 @@ const formatPrice = (price: number) => {
 
 export default function DashboardScreen() {
   const router = useRouter();
-  const [userName, setUserName] = useState('کاربر آفاریکس');
+  const { userId, userToken, userName, isAuthenticated } = useAuth();
   const [walletBalance, setWalletBalance] = useState(0);
   const [unreadCount, setUnreadCount] = useState(1);
 
-  useEffect(() => {
-    // دریافت نام کاربر
-    AsyncStorage.getItem('name').then((name) => {
-      if (name) setUserName(name);
-    });
-
-    // تابع دریافت اطلاعات کاربر و موجودی از سرور
-    const fetchUserData = async () => {
-      try {
-        // فرض می‌کنیم شناسه یا شماره کاربر در AsyncStorage ذخیره شده است
-        const userId = await AsyncStorage.getItem('user_id'); // اگر کلید شما چیز دیگری است (مثل phone) اینجا تغییر دهید
-        
-        if (!userId) {
-          // اگر کاربری لاگین نبود
-          return;
-        }
-
-        const response = await fetch('http://mazhikeabi.com/API/get-user.php', {
-          method: 'POST',
-          headers: {
-            'Accept': 'application/json',
-            'Content-Type': 'application/json',
-          },
-          // ارسال آیدی به بک‌اند برای دریافت موجودی همین شخص
-          body: JSON.stringify({ user_id: userId }), 
-        });
-
-        const data = await response.json();
-        
-        // تنظیم موجودی بر اساس پاسخ دریافتی از سرور
-        if (data && data.balance !== undefined) {
-          setWalletBalance(Number(data.balance));
-        } else if (data && data.status === 'success' && data.data && data.data.balance !== undefined) {
-           setWalletBalance(Number(data.data.balance));
-        }
-      } catch (error) {
-        console.error("Error fetching balance:", error);
-        // در صورت بروز خطا در ارتباط با سرور می‌توانید مقدار پیش‌فرض یا آخرین موجودی ذخیره شده را نشان دهید
+  const fetchUserData = React.useCallback(async () => {
+    try {
+      if (!userId && !userToken) {
+        router.replace('/login' as any);
+        return;
       }
-    };
 
+      const payload = new URLSearchParams();
+      if (userId) {
+        payload.append('user_id', userId);
+        payload.append('id', userId);
+        payload.append('uid', userId);
+      }
+      if (userToken) {
+        payload.append('api_token', userToken);
+        payload.append('token', userToken);
+        payload.append('user_token', userToken);
+      }
+
+      console.log('[Dashboard] requesting dashboard.php for user_id/token:', { userId, hasToken: Boolean(userToken) });
+      const data = await fetchJson<any>('dashboard.php', {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: payload.toString(),
+      });
+
+      console.log('[Dashboard] dashboard.php parsed response:', data);
+
+      const balanceValue =
+        data?.balance ??
+        data?.user?.balance ??
+        data?.data?.balance ??
+        data?.result?.balance;
+
+      console.log('[Dashboard] resolved balance field:', balanceValue);
+
+      if (balanceValue !== undefined && balanceValue !== null && balanceValue !== '') {
+        setWalletBalance(Number(balanceValue));
+      } else {
+        console.warn('[Dashboard] balance field not found in response shape');
+      }
+    } catch (error) {
+      console.error('Error fetching balance:', error);
+      if (error instanceof Error) {
+        console.log('[Dashboard] error message:', error.message);
+        console.log('[Dashboard] error cause:', error.cause);
+      }
+    }
+  }, [router, userId, userToken]);
+
+  useEffect(() => {
+    if (!isAuthenticated) {
+      router.replace('/login' as any);
+      return;
+    }
     fetchUserData();
-  }, []);
+  }, [fetchUserData, isAuthenticated, router]);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      if (isAuthenticated) {
+        fetchUserData();
+      }
+    }, [fetchUserData, isAuthenticated])
+  );
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -86,11 +115,11 @@ export default function DashboardScreen() {
             <View style={styles.topHeader}>
               <View style={styles.userInfo}>
                 <View style={styles.avatar}>
-                  <Ionicons name="person" size={22} color="#10a37f" />
+                  <Ionicons name="person" size={22} color="#0ed874" />
                 </View>
                 <View style={styles.welcomeText}>
                   <Text style={styles.welcomeSub}>سلام، خوش آمدید</Text>
-                  <Text style={styles.welcomeName}>{userName}</Text>
+                  <Text style={styles.welcomeName}>{userName || 'کاربر گرامی'}</Text>
                 </View>
               </View>
 
@@ -107,7 +136,7 @@ export default function DashboardScreen() {
 
             {/* کارت کیف پول با گرادیانت */}
             <LinearGradient
-              colors={['#10a37f', '#0d8a6a']}
+              colors={['#0ed874', '#0d8a6a']}
               start={{ x: 0, y: 0 }}
               end={{ x: 1, y: 1 }}
               style={styles.walletCard}
@@ -198,7 +227,7 @@ export default function DashboardScreen() {
           {/* منوی پایین ثابت داخل باکس */}
           <View style={styles.bottomNav}>
             <TouchableOpacity style={[styles.navItem, styles.navItemActive]}>
-              <Ionicons name="home" size={22} color="#10a37f" />
+              <Ionicons name="home" size={22} color="#0ed874" />
               <Text style={[styles.navText, styles.navTextActive]}>خانه</Text>
             </TouchableOpacity>
             
@@ -273,12 +302,13 @@ const styles = StyleSheet.create({
   },
   welcomeSub: {
     fontSize: 11,
+    fontFamily: 'Vazirmatn',
     color: '#718096',
     textAlign: 'right',
-    fontFamily: 'sans-serif',
   },
   welcomeName: {
     fontSize: 14,
+    fontFamily: 'Vazirmatn',
     fontWeight: 'bold',
     color: '#2d3748',
     textAlign: 'right',
@@ -323,6 +353,7 @@ const styles = StyleSheet.create({
   },
   walletTitle: {
     fontSize: 12,
+    fontFamily: 'Vazirmatn',
     color: '#fff',
     opacity: 0.9,
     marginBottom: 8,
@@ -335,11 +366,13 @@ const styles = StyleSheet.create({
   },
   walletAmount: {
     fontSize: 26,
+    fontFamily: 'Vazirmatn',
     fontWeight: 'bold',
     color: '#fff',
   },
   walletCurrency: {
     fontSize: 12,
+    fontFamily: 'Vazirmatn',
     color: '#fff',
     opacity: 0.9,
     marginRight: 5,
@@ -357,8 +390,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   btnDepositText: {
-    color: '#10a37f',
+    color: '#0ed874',
     fontSize: 13,
+    fontFamily: 'Vazirmatn',
     fontWeight: 'bold',
   },
   btnHistory: {
@@ -371,6 +405,7 @@ const styles = StyleSheet.create({
   btnHistoryText: {
     color: '#fff',
     fontSize: 13,
+    fontFamily: 'Vazirmatn',
     fontWeight: 'bold',
   },
   servicesSection: {
@@ -378,6 +413,7 @@ const styles = StyleSheet.create({
   },
   sectionTitle: {
     fontSize: 14,
+    fontFamily: 'Vazirmatn',
     fontWeight: 'bold',
     color: '#2d3748',
     marginBottom: 15,
@@ -407,6 +443,7 @@ const styles = StyleSheet.create({
   },
   serviceText: {
     fontSize: 11,
+    fontFamily: 'Vazirmatn',
     color: '#2d3748',
     fontWeight: '500',
   },
@@ -423,6 +460,7 @@ const styles = StyleSheet.create({
   badgeSoonText: {
     color: '#7e22ce',
     fontSize: 8,
+    fontFamily: 'Vazirmatn',
     fontWeight: 'bold',
   },
   bottomNav: {
@@ -458,10 +496,11 @@ const styles = StyleSheet.create({
   },
   navText: {
     fontSize: 10,
+    fontFamily: 'Vazirmatn',
     color: '#718096',
   },
   navTextActive: {
-    color: '#10a37f',
+    color: '#0ed874',
     fontWeight: 'bold',
   },
 });

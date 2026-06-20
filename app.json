@@ -1,11 +1,11 @@
 {
   "expo": {
-    "name": "wallet",
-    "slug": "wallet",
-    "version": "1.0.0",
+    "name": "آفاریکس",
+    "slug": "afariex",
+    "version": "1.0.1",
     "orientation": "portrait",
-    "icon": "./assets/images/icon.png",
-    "scheme": "wallet",
+    "icon": "./assets/images/logo.png",
+    "scheme": "afariex",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
@@ -17,27 +17,27 @@
       }
     },
     "android": {
-      "usesCleartextTraffic": true,
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/images/android-icon-foreground.png",
-        "backgroundImage": "./assets/images/android-icon-background.png",
-        "monochromeImage": "./assets/images/android-icon-monochrome.png"
+        "foregroundImage": "./assets/images/logo.png",
+        "backgroundImage": "./assets/images/logo.png",
+        "monochromeImage": "./assets/images/logo.png"
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
-      "package": "com.anonymous.wallet"
+      "package": "com.mahyaasmari1.afariex",
+      "versionCode": 2
     },
     "web": {
       "output": "static",
-      "favicon": "./assets/images/favicon.png"
+      "favicon": "./assets/images/logo.png"
     },
     "plugins": [
       "expo-router",
       [
         "expo-splash-screen",
         {
-          "image": "./assets/images/splash-icon.png",
+          "image": "./assets/images/logo.png",
           "imageWidth": 200,
           "resizeMode": "contain",
           "backgroundColor": "#ffffff",
@@ -45,7 +45,8 @@
             "backgroundColor": "#000000"
           }
         }
-      ]
+      ],
+      "expo-font"
     ],
     "experiments": {
       "typedRoutes": true,
@@ -54,7 +55,7 @@
     "extra": {
       "router": {},
       "eas": {
-        "projectId": "e1ffaea5-ac3d-467e-9ef3-f1b45ac51607"
+        "projectId": "c8a59e5f-7d8c-46f5-8c34-20f7f7d8fea7"
       }
     }
   }

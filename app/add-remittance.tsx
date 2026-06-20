@@ -1,428 +1,680 @@
-import React, { useState } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Picker } from '@react-native-picker/picker';
+import * as Print from 'expo-print';
+import { useRouter } from 'expo-router';
+import * as Sharing from 'expo-sharing';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
-  View,
+  ActivityIndicator,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
-  StyleSheet,
-  ScrollView,
-  KeyboardAvoidingView,
-  Platform,
-  Modal,
-  ActivityIndicator
+  View,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
-import { useRouter, Stack } from 'expo-router';
+
+import { useAuth } from '@/lib/auth-context';
+import { showError, showSuccess } from '@/lib/toast';
+
+const API_BASE_URL = 'https://afariex.ir/API';
+
+type Agency = {
+  id: string | number;
+  name: string;
+  address?: string;
+};
+
+type ExchangeRate = {
+  id: string | number;
+  toman_per_afn: string | number;
+  effective_date?: string;
+};
+
+type AgenciesResponse = {
+  success: boolean;
+  data?: Agency[];
+  rows?: Agency[];
+  message?: string;
+};
+
+type ExchangeRatesResponse = {
+  success: boolean;
+  data?: ExchangeRate[];
+  rows?: ExchangeRate[];
+  message?: string;
+};
+
+type AddRemittanceResponse = {
+  success?: boolean;
+  message?: string;
+  data?: {
+    remittance_id?: number | string;
+    tracking_number?: number | string;
+    code?: number | string;
+    agency_address?: string;
+    agency_name?: string;
+  };
+};
 
 export default function AddRemittanceScreen() {
   const router = useRouter();
-  
-  // State ها دقیقا مطابق ستون های دیتابیس
-  const [agency, setAgency] = useState('');
-  const [exchanger, setExchanger] = useState('');
-  const [sender, setSender] = useState('');
-  const [receiver, setReceiver] = useState('');
+  const { userId, userToken, userName, userMobile } = useAuth();
+
+  const [agencies, setAgencies] = useState<Agency[]>([]);
+  const [exchangeRates, setExchangeRates] = useState<ExchangeRate[]>([]);
+  const [selectedAgencyId, setSelectedAgencyId] = useState<number | null>(null);
+  const [selectedRateId, setSelectedRateId] = useState<number | null>(null);
+
   const [amountToman, setAmountToman] = useState('');
   const [amountAfghani, setAmountAfghani] = useState('');
-  const [description, setDescription] = useState('');
-  
-  const [isLoading, setIsLoading] = useState(false);
-  const [modalVisible, setModalVisible] = useState(false);
-  const [modalMessage, setModalMessage] = useState('');
-  const [isSuccess, setIsSuccess] = useState(false);
+  const [senderName, setSenderName] = useState('');
+  const [receiverName, setReceiverName] = useState('');
+  const [receiverPhone, setReceiverPhone] = useState('');
 
-  const handleRegister = async () => {
-    // طبق دیتابیس شما این فیلدها Not Null هستند پس باید حتما پر شوند
-    if (!agency || !exchanger || !sender || !receiver || !amountToman || !amountAfghani) {
-      setModalMessage('لطفاً تمام فیلدهای ضروری را پر کنید (توضیحات اختیاری است).');
-      setIsSuccess(false);
-      setModalVisible(true);
+  const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [resolvedUserId, setResolvedUserId] = useState<string>('');
+  const [resolvedApiToken, setResolvedApiToken] = useState<string>('');
+  const [loadingAuth, setLoadingAuth] = useState(true);
+  const [successModalVisible, setSuccessModalVisible] = useState(false);
+  const [lastTrackingCode, setLastTrackingCode] = useState<string>('');
+  const [lastAgencyAddress, setLastAgencyAddress] = useState<string>('');
+  const [lastAgencyName, setLastAgencyName] = useState<string>('');
+
+  const selectedRate = useMemo(
+    () => exchangeRates.find((rate) => Number(rate.id) === selectedRateId) || null,
+    [exchangeRates, selectedRateId]
+  );
+
+  const resetForm = () => {
+    setAmountToman('');
+    setAmountAfghani('');
+    setReceiverName('');
+    setReceiverPhone('');
+  };
+
+  const buildTrackingCode = (apiResult: AddRemittanceResponse) => {
+    const fromApi =
+      apiResult?.data?.tracking_number ??
+      apiResult?.data?.code ??
+      apiResult?.data?.remittance_id;
+    if (fromApi !== undefined && fromApi !== null && String(fromApi).trim() !== '') {
+      return String(fromApi);
+    }
+    return `TMP-${Date.now().toString().slice(-8)}`;
+  };
+
+  const handleSavePdf = async () => {
+    try {
+      const html = `
+      <html dir="rtl">
+        <head>
+          <meta charset="utf-8" />
+          <style>
+            body { font-family: sans-serif; padding: 24px; direction: rtl; color:#0f172a; }
+            .card { border: 1px solid #d6f5e6; border-radius: 12px; padding: 16px; }
+            h2 { margin: 0 0 14px 0; color: #0f9f58; }
+            p { margin: 8px 0; line-height: 1.9; font-size: 14px; }
+            .code { background:#e8fff2; padding:6px 10px; border-radius:8px; display:inline-block; }
+          </style>
+        </head>
+        <body>
+          <div class="card">
+            <h2>رسید ثبت حواله</h2>
+            <p><strong>کد حواله:</strong> <span class="code">${lastTrackingCode}</span></p>
+            <p><strong>نام فرستنده:</strong> ${senderName}</p>
+            <p><strong>نام گیرنده:</strong> ${receiverName}</p>
+            <p><strong>شماره تماس گیرنده:</strong> ${receiverPhone}</p>
+            <p><strong>مبلغ تومان:</strong> ${amountToman}</p>
+            <p><strong>مبلغ افغانی:</strong> ${amountAfghani}</p>
+            <p><strong>نمایندگی:</strong> ${lastAgencyName || '-'}</p>
+            <p><strong>آدرس نمایندگی:</strong> ${lastAgencyAddress || '-'}</p>
+          </div>
+        </body>
+      </html>`;
+
+      const { uri } = await Print.printToFileAsync({ html });
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(uri);
+      } else {
+        showSuccess('PDF آماده شد', uri);
+      }
+    } catch (err) {
+      console.error('API Error Details:', err);
+      showError('خطا', 'ساخت PDF ناموفق بود.');
+    }
+  };
+
+  useEffect(() => {
+    const fallbackName = userName?.trim() || userMobile?.trim() || '';
+    setSenderName(fallbackName);
+  }, [userName, userMobile]);
+
+  useEffect(() => {
+    const resolveAuthPayload = async () => {
+      setLoadingAuth(true);
+      try {
+        const resolvedIdFromContext = userId?.trim() || '';
+        const resolvedTokenFromContext = userToken?.trim() || '';
+
+        let finalUserId = resolvedIdFromContext;
+        let finalApiToken = resolvedTokenFromContext;
+
+        if (!finalUserId || !finalApiToken) {
+          const [
+            storedUserIdA,
+            storedUserIdB,
+            storedTokenA,
+            storedTokenB,
+            storedTokenC,
+          ] = await Promise.all([
+            AsyncStorage.getItem('userId'),
+            AsyncStorage.getItem('user_id'),
+            AsyncStorage.getItem('userToken'),
+            AsyncStorage.getItem('api_token'),
+            AsyncStorage.getItem('token'),
+          ]);
+
+          if (!finalUserId) finalUserId = (storedUserIdA || storedUserIdB || '').trim();
+          if (!finalApiToken) finalApiToken = (storedTokenA || storedTokenB || storedTokenC || '').trim();
+        }
+
+        setResolvedUserId(finalUserId);
+        setResolvedApiToken(finalApiToken);
+      } catch (err) {
+        console.error('API Error Details:', err);
+        setResolvedUserId('');
+        setResolvedApiToken('');
+      } finally {
+        setLoadingAuth(false);
+      }
+    };
+
+    resolveAuthPayload();
+  }, [userId, userToken]);
+
+  const fetchData = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const [agenciesResRaw, ratesResRaw] = await Promise.all([
+        fetch(`${API_BASE_URL}/get_agencies.php`),
+        fetch(`${API_BASE_URL}/get_exchange_rates.php`),
+      ]);
+
+      const agenciesRes: AgenciesResponse = await agenciesResRaw.json();
+      const ratesRes: ExchangeRatesResponse = await ratesResRaw.json();
+
+      const agenciesList = agenciesRes?.data ?? agenciesRes?.rows ?? [];
+      const ratesList = ratesRes?.data ?? ratesRes?.rows ?? [];
+
+      if (agenciesRes?.success && Array.isArray(agenciesList)) {
+        setAgencies(agenciesList);
+        if (agenciesList.length > 0) {
+          setSelectedAgencyId(Number(agenciesList[0].id));
+        }
+      } else {
+        setError(agenciesRes?.message || 'خطا در دریافت لیست نمایندگی‌ها');
+        setAgencies([]);
+      }
+
+      if (ratesRes?.success && Array.isArray(ratesList)) {
+        setExchangeRates(ratesList);
+        if (ratesList.length > 0) {
+          setSelectedRateId(Number(ratesList[0].id));
+        }
+      } else {
+        setError(ratesRes?.message || 'خطا در دریافت نرخ ارز');
+        setExchangeRates([]);
+      }
+    } catch (err) {
+      console.error('API Error Details:', err);
+      setError('خطا در ارتباط با سرور. لطفاً اینترنت خود را بررسی کنید.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchData();
+  }, []);
+
+  useEffect(() => {
+    if (!amountToman || !selectedRate) {
+      setAmountAfghani('');
+      return;
+    }
+    const rate = Number(selectedRate.toman_per_afn);
+    if (!Number.isFinite(rate) || rate <= 0) {
+      setAmountAfghani('');
+      return;
+    }
+    const calculated = parseFloat(amountToman || '0') / rate;
+    setAmountAfghani(Number.isFinite(calculated) ? calculated.toFixed(0) : '');
+  }, [amountToman, selectedRate]);
+
+  const handleSubmit = async () => {
+    if (submitting) return;
+
+    const selectedAgency = agencies.find((a) => Number(a.id) === selectedAgencyId);
+    const selectedRateObj = exchangeRates.find((r) => Number(r.id) === selectedRateId);
+
+    if (!selectedAgencyId || !selectedAgency) {
+      showError('خطا', 'لطفاً یک نمایندگی انتخاب کنید.');
+      return;
+    }
+    if (!selectedRateId || !selectedRateObj) {
+      showError('خطا', 'نرخ ارز معتبر یافت نشد.');
+      return;
+    }
+    if (!amountToman || Number(amountToman) <= 0) {
+      showError('خطا', 'مبلغ تومان را به‌درستی وارد کنید.');
+      return;
+    }
+    if (!amountAfghani || Number(amountAfghani) <= 0) {
+      showError('خطا', 'مبلغ افغانی معتبر نیست.');
+      return;
+    }
+    if (!resolvedUserId) {
+      showError('خطا', 'شناسه کاربر (user_id) یافت نشد. لطفاً دوباره وارد شوید.');
+      return;
+    }
+    if (!resolvedApiToken) {
+      showError('خطا', 'توکن کاربر (api_token) یافت نشد. لطفاً دوباره وارد شوید.');
+      return;
+    }
+    if (!senderName.trim() || !receiverName.trim() || !receiverPhone.trim()) {
+      showError('خطا', 'نام فرستنده، گیرنده و شماره تماس الزامی است.');
       return;
     }
 
-    setIsLoading(true);
-
+    setSubmitting(true);
     try {
-      // کلیدها دقیقاً هم‌نام با ستون‌های دیتابیس شما
-      const requestData = {
-        agency: agency,
-        exchanger: exchanger,
-        sender: sender,
-        receiver: receiver,
-        amount_toman: amountToman,
-        amount_afghani: amountAfghani,
-        description: description,
+      const payload = {
+        user_id: resolvedUserId,
+        api_token: resolvedApiToken,
+        agency_id: selectedAgencyId,
+        amount_toman: amountToman.trim(),
+        amount_afn: amountAfghani.trim(),
+        sender_name: senderName.trim(),
+        receiver_name: receiverName.trim(),
+        receiver_phone: receiverPhone.trim(),
+        agency: selectedAgency.name,
+        rate: String(selectedRateObj.toman_per_afn),
       };
 
-      console.log("Sending data:", requestData);
-
-      // --- تغییر آدرس API به دامنه جدید ---
-      const response = await fetch('http://mazhikeabi.com/API/add_remittance.php', {
+      const response = await fetch(`${API_BASE_URL}/add_remittance.php`, {
         method: 'POST',
         headers: {
-          'Accept': 'application/json',
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(requestData),
+        body: JSON.stringify(payload),
       });
 
-      const responseText = await response.text();
-      console.log("Server Raw Response:", responseText);
+      const result: AddRemittanceResponse = await response.json();
 
-      let data;
-      try {
-        data = JSON.parse(responseText);
-      } catch (parseError) {
-        console.error("JSON Parse Error:", parseError);
-        setModalMessage('خطا در خواندن اطلاعات از سرور.');
-        setIsSuccess(false);
-        setModalVisible(true);
-        setIsLoading(false);
-        return;
-      }
+      if (result?.success) {
+        const trackingCode = buildTrackingCode(result);
+        const agencyAddressFromApi = result?.data?.agency_address || '';
+        const selectedAgencyAddress = selectedAgency?.address || '';
+        const finalAddress = agencyAddressFromApi || selectedAgencyAddress || 'آدرس ثبت نشده';
+        const finalAgencyName = result?.data?.agency_name || selectedAgency?.name || '';
 
-      if (data.success || data.status === 'success') {
-        setModalMessage('حواله با موفقیت ثبت شد!');
-        setIsSuccess(true);
-        setModalVisible(true);
-        
-        // پاک کردن فرم
-        setAgency('');
-        setExchanger('');
-        setSender('');
-        setReceiver('');
-        setAmountToman('');
-        setAmountAfghani('');
-        setDescription('');
+        setLastTrackingCode(trackingCode);
+        setLastAgencyAddress(finalAddress);
+        setLastAgencyName(finalAgencyName);
+        setSuccessModalVisible(true);
+        showSuccess('موفق', 'حواله با موفقیت ثبت شد.');
       } else {
-        setModalMessage(data.message || 'خطا در ثبت حواله.');
-        setIsSuccess(false);
-        setModalVisible(true);
+        showError('خطا', result?.message || 'خطا در ثبت حواله');
       }
-    } catch (error) {
-      console.error("Network Fetch Error: ", error);
-      setModalMessage('مشکلی در ارتباط با سرور پیش آمد.');
-      setIsSuccess(false);
-      setModalVisible(true);
+    } catch (err) {
+      console.error('API Error Details:', err);
+      showError('خطای ارتباط', 'مشکل در ارتباط با سرور رخ داده است.');
     } finally {
-      setIsLoading(false);
+      setSubmitting(false);
     }
   };
 
-  const closeModal = () => {
-    setModalVisible(false);
-    if (isSuccess) {
-      router.back();
-    }
-  };
+  if (loading || loadingAuth) {
+    return (
+      <View style={styles.center}>
+        <ActivityIndicator size="large" color="#0ed874" />
+        <Text style={styles.loadingText}>در حال دریافت اطلاعات...</Text>
+      </View>
+    );
+  }
+
+  if (error) {
+    return (
+      <View style={styles.center}>
+        <Text style={styles.errorText}>{error}</Text>
+        <TouchableOpacity style={styles.retryBtn} onPress={fetchData}>
+          <Text style={styles.retryText}>تلاش مجدد</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
 
   return (
-    <KeyboardAvoidingView 
-      style={styles.container} 
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-    >
-      {/* حذف هدر انگلیسی پیش‌فرض و اضافی بالای صفحه */}
-      <Stack.Screen options={{ headerShown: false }} />
+    <KeyboardAvoidingView
+      style={styles.screen}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      <View style={styles.container}>
+        <Text style={styles.title}>ثبت حواله</Text>
 
-      <ScrollView contentContainerStyle={styles.scrollContent}>
-        
-        <View style={styles.card}>
-          
-          {/* هدر داخلی فرم (مطابق عکس طراحی شما) */}
-          <View style={styles.header}>
-            <View style={{ width: 40 }} />
-            <Text style={styles.headerTitle}>ثبت حواله جدید</Text>
-            <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-              <Ionicons name="arrow-forward" size={24} color="#333" />
-            </TouchableOpacity>
+        <Text style={styles.label}>نمایندگی</Text>
+        <View style={styles.pickerContainer}>
+          <Picker selectedValue={selectedAgencyId} onValueChange={(v) => setSelectedAgencyId(v)}>
+            {agencies.map((agency) => (
+              <Picker.Item key={agency.id} label={agency.name} value={Number(agency.id)} />
+            ))}
+          </Picker>
+        </View>
+
+        <Text style={styles.label}>نرخ ارز</Text>
+        <View style={styles.readonlyBox}>
+          <Text style={styles.readonlyText}>
+            {selectedRate ? `${selectedRate.toman_per_afn} تومان به ازای هر افغانی` : '-'}
+          </Text>
+        </View>
+
+        <Text style={styles.label}>نام فرستنده</Text>
+        <TextInput
+          style={[styles.input, styles.disabledInput]}
+          editable={false}
+          value={senderName}
+          placeholder="نام کاربر"
+        />
+
+        <View style={styles.row}>
+          <View style={styles.half}>
+            <Text style={styles.label}>مبلغ تومان</Text>
+            <TextInput
+              style={styles.input}
+              keyboardType="numeric"
+              value={amountToman}
+              onChangeText={setAmountToman}
+              placeholder="5000000"
+            />
           </View>
-          <View style={styles.divider} />
-
-          <View style={styles.formContainer}>
-            
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>نمایندگی</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="نام نمایندگی را وارد کنید"
-                placeholderTextColor="#9CA3AF"
-                value={agency}
-                onChangeText={setAgency}
-                textAlign="right"
-              />
-            </View>
-
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>صراف</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="محمد کریمی"
-                placeholderTextColor="#9CA3AF"
-                value={exchanger}
-                onChangeText={setExchanger}
-                textAlign="right"
-              />
-            </View>
-
-            <View style={styles.row}>
-              <View style={styles.halfWidth}>
-                <Text style={styles.label}>فرستنده</Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="نام فرستنده"
-                  placeholderTextColor="#9CA3AF"
-                  value={sender}
-                  onChangeText={setSender}
-                  textAlign="center"
-                />
-              </View>
-              <View style={styles.halfWidth}>
-                <Text style={styles.label}>گیرنده</Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="نام گیرنده"
-                  placeholderTextColor="#9CA3AF"
-                  value={receiver}
-                  onChangeText={setReceiver}
-                  textAlign="center"
-                />
-              </View>
-            </View>
-
-            <View style={styles.row}>
-              <View style={styles.halfWidth}>
-                <Text style={styles.label}>مقدار وجه (تومان)</Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="مثلا 10,000,000"
-                  placeholderTextColor="#9CA3AF"
-                  value={amountToman}
-                  onChangeText={setAmountToman}
-                  keyboardType="numeric"
-                  textAlign="center"
-                />
-              </View>
-              <View style={styles.halfWidth}>
-                <Text style={styles.label}>مقدار (افغانی)</Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="مثلا 15,000"
-                  placeholderTextColor="#9CA3AF"
-                  value={amountAfghani}
-                  onChangeText={setAmountAfghani}
-                  keyboardType="numeric"
-                  textAlign="center"
-                />
-              </View>
-            </View>
-
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>توضیحات</Text>
-              <TextInput
-                style={[styles.input, styles.textArea]}
-                placeholder="توضیحات حواله..."
-                placeholderTextColor="#9CA3AF"
-                value={description}
-                onChangeText={setDescription}
-                textAlign="right"
-                multiline={true}
-                numberOfLines={3}
-              />
-            </View>
-
-            <TouchableOpacity 
-              style={styles.submitBtn} 
-              onPress={handleRegister}
-              disabled={isLoading}
-            >
-              {isLoading ? (
-                <ActivityIndicator color="#fff" />
-              ) : (
-                <Text style={styles.submitBtnText}>ثبت حواله</Text>
-              )}
-            </TouchableOpacity>
-
+          <View style={styles.half}>
+            <Text style={styles.label}>مبلغ افغانی</Text>
+            <TextInput
+              style={[styles.input, styles.disabledInput]}
+              editable={false}
+              value={amountAfghani}
+              placeholder="0"
+            />
           </View>
         </View>
-      </ScrollView>
+
+        <Text style={styles.label}>نام گیرنده</Text>
+        <TextInput
+          style={styles.input}
+          value={receiverName}
+          onChangeText={setReceiverName}
+          placeholder="نام گیرنده"
+        />
+
+        <Text style={styles.label}>شماره تماس گیرنده</Text>
+        <TextInput
+          style={styles.input}
+          keyboardType="phone-pad"
+          value={receiverPhone}
+          onChangeText={setReceiverPhone}
+          placeholder="09xxxxxxxxx"
+        />
+
+        <TouchableOpacity
+          style={[styles.submitBtn, (submitting || !resolvedUserId || !resolvedApiToken) && styles.disabledBtn]}
+          onPress={handleSubmit}
+          disabled={submitting || !resolvedUserId || !resolvedApiToken}>
+          {submitting ? <ActivityIndicator color="#fff" /> : <Text style={styles.submitText}>ثبت حواله</Text>}
+        </TouchableOpacity>
+      </View>
 
       <Modal
+        visible={successModalVisible}
+        transparent
         animationType="fade"
-        transparent={true}
-        visible={modalVisible}
-        onRequestClose={closeModal}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <View style={[styles.iconContainer, isSuccess ? styles.iconSuccess : styles.iconError]}>
-              <Ionicons 
-                name={isSuccess ? "checkmark" : "close"} 
-                size={40} 
-                color="#fff" 
-              />
+        onRequestClose={() => setSuccessModalVisible(false)}>
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>ثبت حواله با موفقیت انجام شد</Text>
+            <Text style={styles.modalLine}>کد حواله: <Text style={styles.modalCode}>{lastTrackingCode}</Text></Text>
+            <Text style={styles.modalLine}>نمایندگی: {lastAgencyName || '-'}</Text>
+            <Text style={styles.modalLine}>آدرس نمایندگی: {lastAgencyAddress || '-'}</Text>
+
+            <View style={styles.modalActions}>
+              <TouchableOpacity style={[styles.modalBtn, styles.pdfBtn]} onPress={handleSavePdf}>
+                <Text style={styles.modalBtnText}>ذخیره PDF</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.modalBtn, styles.homeBtn]}
+                onPress={() => {
+                  setSuccessModalVisible(false);
+                  resetForm();
+                  router.replace('/dashboard');
+                }}>
+                <Text style={styles.modalBtnText}>رفتن به خانه</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.modalBtn, styles.closeBtn]}
+                onPress={() => {
+                  setSuccessModalVisible(false);
+                  resetForm();
+                }}>
+                <Text style={styles.modalBtnText}>بستن</Text>
+              </TouchableOpacity>
             </View>
-            <Text style={styles.modalTitle}>{isSuccess ? 'موفق' : 'خطا'}</Text>
-            <Text style={styles.modalMessageText}>{modalMessage}</Text>
-            <TouchableOpacity style={styles.modalButton} onPress={closeModal}>
-              <Text style={styles.modalButtonText}>باشه</Text>
-            </TouchableOpacity>
           </View>
         </View>
       </Modal>
-
     </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  screen: {
     flex: 1,
-    backgroundColor: '#F3F4F6',
-  },
-  scrollContent: {
-    padding: 16,
-    paddingTop: 40,
-    flexGrow: 1,
+    backgroundColor: '#f4f7f5',
     justifyContent: 'center',
   },
-  card: {
+  container: {
+    marginHorizontal: 16,
     backgroundColor: '#fff',
-    borderRadius: 20,
-    padding: 20,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.1,
-    shadowRadius: 10,
+    borderRadius: 22,
+    paddingHorizontal: 16,
+    paddingVertical: 18,
+    borderWidth: 1,
+    borderColor: '#e4e8ec',
+    shadowColor: '#111827',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.06,
+    shadowRadius: 20,
     elevation: 4,
   },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 15,
-  },
-  backButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#F3F4F6',
+  center: {
+    flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
+    backgroundColor: '#f4f7f5',
+    padding: 20,
   },
-  headerTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
+  title: {
+    fontSize: 22,
+    fontWeight: '700',
+    color: '#111827',
+    fontFamily: 'VazirmatnBold',
+    textAlign: 'center',
+    marginBottom: 12,
+  },
+  label: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#4b5563',
+    marginBottom: 6,
+    marginTop: 8,
+    fontFamily: 'Vazirmatn',
+    textAlign: 'right',
+  },
+  input: {
+    borderWidth: 1,
+    borderColor: '#d7dde3',
+    borderRadius: 12,
+    paddingVertical: 11,
+    paddingHorizontal: 12,
+    backgroundColor: '#fdfefe',
+    color: '#111827',
+    fontFamily: 'Vazirmatn',
+    fontSize: 14,
+    textAlign: 'right',
+  },
+  readonlyBox: {
+    borderWidth: 1,
+    borderColor: '#d7dde3',
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    backgroundColor: '#f8faf9',
+  },
+  readonlyText: {
+    fontSize: 14,
     color: '#374151',
+    fontFamily: 'Vazirmatn',
+    textAlign: 'right',
+    fontWeight: '500',
   },
-  divider: {
-    height: 1,
-    backgroundColor: '#F3F4F6',
-    marginBottom: 20,
+  disabledInput: {
+    backgroundColor: '#f8fafc',
+    color: '#64748b',
   },
-  formContainer: {
-    gap: 15,
-  },
-  inputGroup: {
-    marginBottom: 10,
+  pickerContainer: {
+    borderWidth: 1,
+    borderColor: '#d7dde3',
+    borderRadius: 12,
+    backgroundColor: '#fff',
+    overflow: 'hidden',
   },
   row: {
     flexDirection: 'row-reverse',
     justifyContent: 'space-between',
-    marginBottom: 10,
+    gap: 8,
   },
-  halfWidth: {
-    width: '48%',
-  },
-  label: {
-    fontSize: 14,
-    color: '#4B5563',
-    marginBottom: 8,
-    textAlign: 'right',
-    fontWeight: '600',
-  },
-  input: {
-    backgroundColor: '#fff',
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
-    borderRadius: 12,
-    padding: 14,
-    fontSize: 14,
-    color: '#1F2937',
-  },
-  textArea: {
-    height: 80,
-    textAlignVertical: 'top',
+  half: {
+    flex: 1,
   },
   submitBtn: {
-    backgroundColor: '#10B981',
-    padding: 16,
+    backgroundColor: '#0ed874',
+    marginTop: 14,
     borderRadius: 12,
     alignItems: 'center',
-    marginTop: 10,
-  },
-  submitBtnText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: 'bold',
-  },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
     justifyContent: 'center',
-    alignItems: 'center',
-  },
-  modalContent: {
-    width: '80%',
-    backgroundColor: '#fff',
-    borderRadius: 20,
-    padding: 20,
-    alignItems: 'center',
-    elevation: 5,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
+    paddingVertical: 13,
+    shadowColor: '#0ed874',
+    shadowOffset: { width: 0, height: 8 },
     shadowOpacity: 0.25,
-    shadowRadius: 4,
+    shadowRadius: 14,
+    elevation: 3,
   },
-  iconContainer: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    justifyContent: 'center',
+  disabledBtn: {
+    opacity: 0.7,
+  },
+  submitText: {
+    color: '#fff',
+    fontSize: 15,
+    fontFamily: 'VazirmatnBold',
+    fontWeight: '700',
+  },
+  errorText: {
+    color: '#b91c1c',
+    fontSize: 14,
+    fontFamily: 'Vazirmatn',
+    textAlign: 'center',
+    marginBottom: 14,
+  },
+  retryBtn: {
+    backgroundColor: '#0ed874',
+    borderRadius: 10,
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+  },
+  retryText: {
+    color: '#fff',
+    fontSize: 14,
+    fontFamily: 'VazirmatnBold',
+    fontWeight: '600',
+  },
+  loadingText: {
+    marginTop: 8,
+    color: '#4b5563',
+    fontSize: 14,
+    fontFamily: 'Vazirmatn',
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(15, 23, 42, 0.45)',
     alignItems: 'center',
-    marginTop: -40,
-    elevation: 5,
+    justifyContent: 'center',
+    padding: 16,
   },
-  iconSuccess: {
-    backgroundColor: '#10B981', 
-  },
-  iconError: {
-    backgroundColor: '#EF4444', 
+  modalCard: {
+    width: '100%',
+    maxWidth: 420,
+    backgroundColor: '#fff',
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#d6f5e6',
+    padding: 18,
   },
   modalTitle: {
-    fontSize: 22,
-    fontWeight: 'bold',
-    color: '#1F2937',
-    marginTop: 15,
+    textAlign: 'center',
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#0f9f58',
+    fontFamily: 'VazirmatnBold',
     marginBottom: 10,
   },
-  modalMessageText: {
-    fontSize: 16,
-    color: '#4B5563',
-    textAlign: 'center',
-    marginBottom: 20,
-    lineHeight: 24,
+  modalLine: {
+    textAlign: 'right',
+    fontSize: 14,
+    color: '#1f2937',
+    fontFamily: 'Vazirmatn',
+    marginBottom: 6,
+    lineHeight: 22,
   },
-  modalButton: {
-    backgroundColor: '#10B981',
-    paddingVertical: 12,
-    paddingHorizontal: 40,
-    borderRadius: 10,
-    width: '100%',
+  modalCode: {
+    fontWeight: '700',
+    color: '#0f9f58',
+    fontFamily: 'VazirmatnBold',
+  },
+  modalActions: {
+    marginTop: 10,
+    gap: 8,
+  },
+  modalBtn: {
+    borderRadius: 12,
+    paddingVertical: 11,
     alignItems: 'center',
   },
-  modalButtonText: {
+  modalBtnText: {
     color: '#fff',
-    fontSize: 16,
-    fontWeight: 'bold',
+    fontSize: 14,
+    fontFamily: 'VazirmatnBold',
+    fontWeight: '700',
+  },
+  pdfBtn: {
+    backgroundColor: '#0ed874',
+  },
+  homeBtn: {
+    backgroundColor: '#059669',
+  },
+  closeBtn: {
+    backgroundColor: '#6b7280',
   },
 });

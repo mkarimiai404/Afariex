@@ -1,30 +1,20 @@
 import React, { useEffect } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Image, SafeAreaView, Dimensions } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Image, Dimensions } from 'react-native';
 import { Feather } from '@expo/vector-icons'; // برای آیکون پشتیبانی
 import { useRouter, Stack } from 'expo-router'; // Stack اضافه شد
-import AsyncStorage from '@react-native-async-storage/async-storage'; // اضافه شدن AsyncStorage
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { useAuth } from '@/lib/auth-context';
 
 export default function WelcomeScreen() {
   const router = useRouter();
+  const { isAuthenticated, isInitialized } = useAuth();
 
-  // اضافه شدن منطق بررسی وضعیت ورود (لاگین)
   useEffect(() => {
-    const checkLoginStatus = async () => {
-      try {
-        // فرض می‌کنیم در زمان لاگین، user_id را ذخیره کرده‌اید
-        const userId = await AsyncStorage.getItem('user_id');
-        
-        if (userId) {
-          // اگر کاربر قبلاً لاگین کرده بود، مستقیما به داشبورد منتقل شود
-          router.replace('/dashboard' as any);
-        }
-      } catch (error) {
-        console.error("Error checking login status:", error);
-      }
-    };
-
-    checkLoginStatus();
-  }, []);
+    if (!isInitialized) return;
+    if (isAuthenticated) {
+      router.replace('/dashboard' as any);
+    }
+  }, [isAuthenticated, isInitialized, router]);
 
   return (
     <SafeAreaView style={styles.container}>
@@ -34,9 +24,8 @@ export default function WelcomeScreen() {
       <View style={styles.card}>
         {/* بخش لوگو */}
         <View style={styles.logoContainer}>
-          {/* آدرس عکس رو میتونی بعدا با عکس خودت توی پوشه assets جایگزین کنی */}
           <Image 
-            source={{ uri: 'https://via.placeholder.com/90' }} 
+            source={require('../assets/images/logo.png')}
             style={styles.logo} 
             resizeMode="contain"
           />
@@ -124,6 +113,7 @@ const styles = StyleSheet.create({
   },
   title: {
     fontSize: 22,
+    fontFamily: 'Vazirmatn',
     color: '#333',
     fontWeight: 'bold',
     marginBottom: 10,
@@ -132,6 +122,7 @@ const styles = StyleSheet.create({
   subtitle: {
     color: '#777',
     fontSize: 14,
+    fontFamily: 'Vazirmatn',
     marginBottom: 40,
     textAlign: 'center',
   },
@@ -144,21 +135,23 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   btnPrimary: {
-    backgroundColor: '#2eb886',
+    backgroundColor: '#0ed874',
   },
   btnPrimaryText: {
     color: '#ffffff',
     fontSize: 15,
+    fontFamily: 'Vazirmatn',
     fontWeight: 'bold',
   },
   btnOutline: {
     backgroundColor: 'transparent',
     borderWidth: 2,
-    borderColor: '#2eb886',
+    borderColor: '#0ed874',
   },
   btnOutlineText: {
-    color: '#2eb886',
+    color: '#0ed874',
     fontSize: 15,
+    fontFamily: 'Vazirmatn',
     fontWeight: 'bold',
   },
   dividerContainer: {
@@ -175,6 +168,7 @@ const styles = StyleSheet.create({
   dividerText: {
     color: '#bbb',
     fontSize: 13,
+    fontFamily: 'Vazirmatn',
     marginHorizontal: 10,
   },
   googleBtn: {
@@ -193,6 +187,7 @@ const styles = StyleSheet.create({
   googleBtnText: {
     color: '#666',
     fontSize: 14,
+    fontFamily: 'Vazirmatn',
   },
   badgeSoon: {
     position: 'absolute',
@@ -205,6 +200,7 @@ const styles = StyleSheet.create({
   badgeSoonText: {
     color: 'white',
     fontSize: 11,
+    fontFamily: 'Vazirmatn',
   },
   supportLink: {
     flexDirection: 'row',
@@ -215,6 +211,7 @@ const styles = StyleSheet.create({
   supportLinkText: {
     color: '#666',
     fontSize: 14,
+    fontFamily: 'Vazirmatn',
     marginRight: 8,
   },
 });

@@ -1,10 +1,15 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, TextInput, TouchableOpacity, StyleSheet, SafeAreaView, ScrollView, KeyboardAvoidingView, Platform, Alert } from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView, KeyboardAvoidingView, Platform, ActivityIndicator } from 'react-native';
 import { Link, useRouter } from 'expo-router';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { SafeAreaView } from 'react-native-safe-area-context';
+
+import { fetchJson } from '@/lib/api';
+import { useAuth } from '@/lib/auth-context';
+import { showError, showSuccess } from '@/lib/toast';
 
 export default function RegisterScreen() {
   const router = useRouter(); 
+  const { signIn } = useAuth();
 
   const [fullName, setFullName] = useState('');
   const [mobile, setMobile] = useState('');
@@ -12,6 +17,7 @@ export default function RegisterScreen() {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [passwordStrength, setPasswordStrength] = useState(0);
+  const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     const generatedPin = Math.floor(10000 + Math.random() * 90000).toString();
@@ -36,43 +42,65 @@ export default function RegisterScreen() {
 
   // اتصال به API ثبت‌نام با دامنه جدید
   const handleRegister = async () => {
-    if (!fullName || !mobile || !password) {
-      Alert.alert('خطا', 'لطفاً تمام فیلدها را پر کنید.');
+    if (loading) return;
+
+    if (!fullName || !mobile || !pin || !password) {
+      showError('خطا', 'لطفاً تمام فیلدها را پر کنید.');
       return;
     }
 
+    setLoading(true);
+
     try {
-      const response = await fetch('http://mazhikeabi.com/API/register.php', {
+      const nameParts = fullName.trim().split(/\s+/).filter(Boolean);
+      const firstName = nameParts[0] || '';
+      const lastName = nameParts.slice(1).join(' ');
+
+      const data = await fetchJson<any>('register.php', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          name: fullName,
-          mobile: mobile,
-          password: password,
-          pin: pin
+          full_name: fullName,
+          first_name: firstName,
+          last_name: lastName,
+          pin_code: pin,
+          mobile,
+          pin,
+          password,
         }),
       });
 
-      const data = await response.json();
+      const normalizedStatus = String(data?.status ?? '').toLowerCase();
+      const isSuccess = data?.success === true || normalizedStatus === 'true' || normalizedStatus === 'success' || normalizedStatus === '1';
 
-      if (data.status === 'true' || data.success) {
-        // ذخیره توکن و آیدی کاربر برای استفاده در سایر صفحات
-        if (data.data?.api_token) {
-          await AsyncStorage.setItem('userToken', data.data.api_token);
-        }
-        if (data.data?.id || data.data?.user_id) {
-          await AsyncStorage.setItem('userId', String(data.data.id || data.data.user_id));
-        }
-        
-        // هدایت به داشبورد
-        router.replace('/dashboard' as any);
+      if (isSuccess) {
+        const userId = data.data?.id || data.data?.user_id;
+        signIn({
+          userToken: data.data?.api_token ? String(data.data.api_token) : null,
+          userId: userId ? String(userId) : null,
+          userName: fullName ? String(fullName) : null,
+          userMobile: mobile ? String(mobile) : null,
+        });
+        showSuccess('ثبت نام موفق', 'اکنون وارد حساب خود شوید.');
+        router.replace('/login');
       } else {
-        Alert.alert('خطا در ثبت نام', data.message || 'مشکلی پیش آمده است. لطفاً مجدداً تلاش کنید.');
+        showError('خطا در ثبت نام', data.message || 'مشکلی پیش آمده است. لطفاً مجدداً تلاش کنید.');
       }
     } catch (error) {
-      Alert.alert('خطای ارتباط', 'خطا در برقراری ارتباط با سرور.');
+      console.log('[Register] full error object', error);
+      console.log('[Register] error details', {
+        message: error instanceof Error ? error.message : String(error),
+        cause: error instanceof Error ? error.cause : undefined,
+      });
+      if (error instanceof Error) {
+        console.log('[Register] error message:', error.message);
+        console.log('[Register] error cause:', error.cause);
+      }
+      showError('خطای ارتباط', 'خطا در برقراری ارتباط با سرور.');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -160,8 +188,8 @@ export default function RegisterScreen() {
               </View>
             </View>
 
-            <TouchableOpacity style={styles.submitBtn} onPress={handleRegister}>
-              <Text style={styles.submitBtnText}>ثبت نام</Text>
+            <TouchableOpacity style={[styles.submitBtn, loading && styles.submitBtnDisabled]} onPress={handleRegister} disabled={loading}>
+              {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.submitBtnText}>ثبت نام</Text>}
             </TouchableOpacity>
 
             <Link href="/" asChild>
@@ -196,21 +224,22 @@ const styles = StyleSheet.create({
     elevation: 3,
   },
   header: { alignItems: 'center', marginBottom: 20 },
-  title: { fontSize: 24, fontWeight: 'bold', color: '#333', marginBottom: 8 },
-  subtitle: { fontSize: 14, color: '#666', textAlign: 'center' },
+  title: { fontSize: 24, fontWeight: 'bold', color: '#333', marginBottom: 8, fontFamily: 'Vazirmatn' },
+  subtitle: { fontSize: 14, color: '#666', textAlign: 'center', fontFamily: 'Vazirmatn' },
   inputWrapper: { marginBottom: 16 },
-  label: { fontSize: 13, fontWeight: 'bold', color: '#333', marginBottom: 6, textAlign: 'right' },
-  input: { borderWidth: 1, borderColor: '#e0e0e0', borderRadius: 8, padding: 12, fontSize: 14, backgroundColor: '#fff', color: '#333' },
-  readOnlyInput: { backgroundColor: '#f9f9f9', color: '#555', fontWeight: 'bold', letterSpacing: 2 },
+  label: { fontSize: 13, fontWeight: 'bold', color: '#333', marginBottom: 6, textAlign: 'right', fontFamily: 'Vazirmatn' },
+  input: { borderWidth: 1, borderColor: '#e0e0e0', borderRadius: 8, padding: 12, fontSize: 14, backgroundColor: '#fff', color: '#333', fontFamily: 'Vazirmatn' },
+  readOnlyInput: { backgroundColor: '#f9f9f9', color: '#555', fontWeight: 'bold', letterSpacing: 2, fontFamily: 'Vazirmatn' },
   warningBox: { backgroundColor: 'rgba(231, 76, 60, 0.08)', padding: 10, borderRadius: 8, marginTop: 8 },
-  warningText: { color: '#e74c3c', fontSize: 12, textAlign: 'right' },
+  warningText: { color: '#e74c3c', fontSize: 12, textAlign: 'right', fontFamily: 'Vazirmatn' },
   passwordContainer: { flexDirection: 'row-reverse', alignItems: 'center' },
   toggleBtn: { borderWidth: 1, borderColor: '#e0e0e0', borderRightWidth: 0, borderTopLeftRadius: 8, borderBottomLeftRadius: 8, padding: 12, backgroundColor: '#fff', justifyContent: 'center', alignItems: 'center' },
-  toggleText: { color: '#21b08c', fontSize: 13, fontWeight: 'bold' },
+  toggleText: { color: '#0ed874', fontSize: 13, fontWeight: 'bold', fontFamily: 'Vazirmatn' },
   strengthMeter: { height: 4, backgroundColor: '#dce0e5', borderRadius: 4, marginTop: 8, flexDirection: 'row-reverse', overflow: 'hidden' },
   strengthBar: { height: '100%' },
-  submitBtn: { backgroundColor: '#21b08c', padding: 14, borderRadius: 8, alignItems: 'center', marginTop: 10 },
-  submitBtnText: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
+  submitBtn: { backgroundColor: '#0ed874', padding: 14, borderRadius: 8, alignItems: 'center', marginTop: 10 },
+  submitBtnDisabled: { opacity: 0.75 },
+  submitBtnText: { color: '#fff', fontSize: 16, fontWeight: 'bold', fontFamily: 'Vazirmatn' },
   backLink: { marginTop: 20, alignItems: 'center' },
-  backLinkText: { color: '#333', fontSize: 14 },
+  backLinkText: { color: '#333', fontSize: 14, fontFamily: 'Vazirmatn' },
 });

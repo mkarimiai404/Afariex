@@ -11,21 +11,22 @@ import {
   ActivityIndicator
 } from 'react-native';
 import { useRouter, Stack } from 'expo-router'; // Stack اضافه شد
-import AsyncStorage from '@react-native-async-storage/async-storage';
+
+import { fetchJson } from '@/lib/api';
+import { useAuth } from '@/lib/auth-context';
+import { showError } from '@/lib/toast';
 
 export default function LoginScreen() {
   const router = useRouter();
+  const { signIn } = useAuth();
   const [mobile, setMobile] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
-  const [errorMessage, setErrorMessage] = useState('');
 
    const handleLogin = async () => {
-    setErrorMessage(''); 
-
     if (!mobile || !password) {
-      setErrorMessage('لطفاً شماره موبایل و رمز عبور را وارد کنید.');
+      showError('خطا', 'لطفاً شماره موبایل و رمز عبور را وارد کنید.');
       return;
     }
 
@@ -37,36 +38,36 @@ export default function LoginScreen() {
       formData.append('mobile', mobile);
       formData.append('password', password);
 
-      // حتماً از https استفاده شود
-      const response = await fetch('http://mazhikeabi.com/API/login.php', {
+      const data = await fetchJson<any>('login.php', {
         method: 'POST',
+        headers: {
+          Accept: 'application/json',
+        },
         // نیازی به تعریف Content-Type نیست، fetch خودش برای FormData آن را تنظیم می‌کند
         body: formData,
       });
 
-      const data = await response.json();
-
       if (data.status === 'success') {
-        // ذخیره توکن و اطلاعات
-        await AsyncStorage.setItem('userToken', data.data.api_token);
-        await AsyncStorage.setItem('userMobile', data.data.mobile);
-        
-        if(data.data.name) {
-           await AsyncStorage.setItem('userName', data.data.name);
-        }
-        
+        const fullName = data.data.full_name || data.data.name;
         const userId = data.data.id || data.data.user_id; 
-        if(userId) {
-           await AsyncStorage.setItem('user_id', String(userId));
-        }
+        signIn({
+          userToken: data.data.api_token ? String(data.data.api_token) : null,
+          userMobile: data.data.mobile ? String(data.data.mobile) : null,
+          userName: fullName ? String(fullName) : null,
+          userId: userId ? String(userId) : null,
+        });
 
         router.replace('/dashboard');
       } else {
-        setErrorMessage(data.message || 'شماره موبایل یا رمز عبور اشتباه است.');
+        showError('خطا در ورود', data.message || 'شماره موبایل یا رمز عبور اشتباه است.');
       }
     } catch (error) {
       console.error('Login Error:', error);
-      setErrorMessage('خطا در ارتباط با سرور. لطفاً اتصال اینترنت خود را بررسی کنید.');
+      if (error instanceof Error) {
+        console.log('[Login] error message:', error.message);
+        console.log('[Login] error cause:', error.cause);
+      }
+      showError('خطای ارتباط', 'خطا در ارتباط با سرور. لطفاً اتصال اینترنت خود را بررسی کنید.');
     } finally {
       setLoading(false);
     }
@@ -86,12 +87,6 @@ export default function LoginScreen() {
         <View style={styles.loginCard}>
           <Text style={styles.title}>ورود به حساب</Text>
           <Text style={styles.subtitle}>خوش برگشتید! لطفاً اطلاعات خود را وارد کنید.</Text>
-
-          {errorMessage ? (
-            <View style={styles.alertError}>
-              <Text style={styles.alertErrorText}>{errorMessage}</Text>
-            </View>
-          ) : null}
 
           <View style={styles.inputGroup}>
             <Text style={styles.label}>شماره موبایل</Text>
@@ -178,6 +173,7 @@ const styles = StyleSheet.create({
   title: {
     color: '#333333',
     fontSize: 24,
+    fontFamily: 'Vazirmatn',
     fontWeight: 'bold',
     marginBottom: 10,
     textAlign: 'center',
@@ -185,20 +181,8 @@ const styles = StyleSheet.create({
   subtitle: {
     color: '#666666',
     fontSize: 14,
+    fontFamily: 'Vazirmatn',
     marginBottom: 30,
-    textAlign: 'center',
-  },
-  alertError: {
-    backgroundColor: '#fdedec',
-    borderColor: '#f5b7b1',
-    borderWidth: 1,
-    padding: 10,
-    borderRadius: 8,
-    marginBottom: 20,
-  },
-  alertErrorText: {
-    color: '#c0392b',
-    fontSize: 14,
     textAlign: 'center',
   },
   inputGroup: {
@@ -208,6 +192,7 @@ const styles = StyleSheet.create({
   label: {
     color: '#333333',
     fontSize: 13,
+    fontFamily: 'Vazirmatn',
     fontWeight: '600',
     marginBottom: 8,
     textAlign: 'right',
@@ -220,6 +205,7 @@ const styles = StyleSheet.create({
     borderColor: '#e0e0e0',
     borderRadius: 8,
     fontSize: 14,
+    fontFamily: 'Vazirmatn',
     color: '#333',
     textAlign: 'left', 
     backgroundColor: '#fff',
@@ -238,10 +224,11 @@ const styles = StyleSheet.create({
   },
   eyeIconText: {
     fontSize: 18,
+    fontFamily: 'Vazirmatn',
     color: '#888',
   },
   loginBtn: {
-    backgroundColor: '#20b28a',
+    backgroundColor: '#0ed874',
     width: '100%',
     padding: 14,
     borderRadius: 8,
@@ -252,11 +239,13 @@ const styles = StyleSheet.create({
   loginBtnText: {
     color: '#ffffff',
     fontSize: 16,
+    fontFamily: 'Vazirmatn',
     fontWeight: 'bold',
   },
   backLink: {
     color: 'rgb(31, 31, 31)',
     fontSize: 14,
+    fontFamily: 'Vazirmatn',
     textAlign: 'center',
     marginTop: 10,
   }

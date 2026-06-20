@@ -1,8 +1,12 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, FlatList, ActivityIndicator, TouchableOpacity, SafeAreaView } from 'react-native';
-import { useRouter, Stack } from 'expo-router';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
+import { Stack, useRouter } from 'expo-router';
+import React, { useEffect, useState } from 'react';
+import { ActivityIndicator, FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+
+import { fetchJson } from '@/lib/api';
+import { useAuth } from '@/lib/auth-context';
+import { showError } from '@/lib/toast';
 
 const toPersianNum = (num: string | number) => {
   if (!num) return '';
@@ -12,48 +16,76 @@ const toPersianNum = (num: string | number) => {
 
 export default function NotificationsScreen() {
   const router = useRouter();
+  const { userToken, userId, isAuthenticated } = useAuth();
   const [notifications, setNotifications] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
 
   const fetchNotifications = async () => {
-    setLoading(true);
-    setError('');
-    try {
-      const token = await AsyncStorage.getItem('userToken');
-       console.log("Token from storage:", token);
-      
-      // آدرس API به دامنه جدید تغییر یافت
-      const response = await fetch('http://mazhikeabi.com/API/get_notifications.php', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ api_token: token }),
-      });
-
-      const data = await response.json();
-
-      if (data.status === 'true') {
-        setNotifications(data.data || data.notifications || []);
-      } else {
-        setError(data.message || 'خطا در دریافت اطلاعات');
-      }
-    } catch (err) {
-      setError('خطا در ارتباط با سرور');
-    } finally {
-      setLoading(false);
+  setLoading(true);
+  try {
+    if (!isAuthenticated) {
+      router.replace('/login' as any);
+      return;
     }
-  };
+    if (!userId && !userToken) {
+      showError('خطا', 'اطلاعات ورود نامعتبر است. لطفاً دوباره وارد شوید.');
+      return;
+    }
+
+    const payload = new URLSearchParams();
+    if (userToken) {
+      payload.append('api_token', userToken);
+      payload.append('token', userToken);
+      payload.append('user_token', userToken);
+    }
+    if (userId) {
+      payload.append('user_id', userId);
+      payload.append('id', userId);
+    }
+
+    console.log('[Notifications] requesting get_notifications.php');
+    
+    const data = await fetchJson<any>('get_notifications.php', {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: payload.toString(),
+    });
+
+    console.log('[Notifications] parsed response:', data);
+
+    // ********** اصلاح اصلی دقیقاً اینجاست **********
+    if (data?.success === true && Array.isArray(data.rows)) {
+      setNotifications(data.rows);
+    } else {
+      showError('خطا', data.message || 'خطا در دریافت اطلاعات');
+      setNotifications([]);
+    }
+
+  } catch (error) {
+    console.warn('[Notifications] request failed:', error);
+    if (error instanceof Error) {
+      console.log('[Notifications] error message:', error.message);
+      console.log('[Notifications] error cause:', error.cause);
+    }
+    showError('خطای ارتباط', 'خطا در ارتباط با سرور');
+    setNotifications([]);
+  } finally {
+    setLoading(false);
+  }
+};
+
 
   useEffect(() => {
     fetchNotifications();
-  }, []);
+  }, [isAuthenticated, userId, userToken]);
 
   const renderNotification = ({ item }: { item: any }) => (
     <View style={[styles.notificationCard, item.is_read == 0 && styles.unreadCard]}>
       <View style={styles.iconContainer}>
-        <Ionicons name="notifications" size={24} color={item.is_read == 0 ? "#10a37f" : "#a0aec0"} />
+        <Ionicons name="notifications" size={24} color={item.is_read == 0 ? "#0ed874" : "#a0aec0"} />
       </View>
       <View style={styles.textContainer}>
         <Text style={styles.title}>{item.title}</Text>
@@ -80,14 +112,7 @@ export default function NotificationsScreen() {
 
           {loading ? (
             <View style={styles.centerContainer}>
-              <ActivityIndicator size="large" color="#10a37f" />
-            </View>
-          ) : error ? (
-            <View style={styles.centerContainer}>
-              <Text style={styles.errorText}>{error}</Text>
-              <TouchableOpacity style={styles.retryBtn} onPress={fetchNotifications}>
-                <Text style={styles.retryBtnText}>تلاش مجدد</Text>
-              </TouchableOpacity>
+              <ActivityIndicator size="large" color="#0ed874" />
             </View>
           ) : notifications.length === 0 ? (
             <View style={styles.centerContainer}>
@@ -151,6 +176,7 @@ const styles = StyleSheet.create({
   },
   headerTitle: {
     fontSize: 16,
+    fontFamily: 'Vazirmatn',
     fontWeight: 'bold',
     color: '#2d3748',
   },
@@ -174,7 +200,7 @@ const styles = StyleSheet.create({
   },
   unreadCard: {
     backgroundColor: '#e6f6f2',
-    borderColor: '#10a37f',
+    borderColor: '#0ed874',
   },
   iconContainer: {
     marginLeft: 15,
@@ -186,6 +212,7 @@ const styles = StyleSheet.create({
   },
   title: {
     fontSize: 14,
+    fontFamily: 'Vazirmatn',
     fontWeight: 'bold',
     color: '#2d3748',
     marginBottom: 5,
@@ -193,6 +220,7 @@ const styles = StyleSheet.create({
   },
   message: {
     fontSize: 12,
+    fontFamily: 'Vazirmatn',
     color: '#4a5568',
     marginBottom: 8,
     textAlign: 'right',
@@ -200,28 +228,14 @@ const styles = StyleSheet.create({
   },
   date: {
     fontSize: 10,
+    fontFamily: 'Vazirmatn',
     color: '#a0aec0',
     textAlign: 'left',
-  },
-  errorText: {
-    color: '#e53e3e',
-    fontSize: 14,
-    marginBottom: 15,
-    textAlign: 'center',
   },
   emptyText: {
     color: '#718096',
     fontSize: 14,
+    fontFamily: 'Vazirmatn',
     marginTop: 15,
-  },
-  retryBtn: {
-    backgroundColor: '#10a37f',
-    paddingHorizontal: 25,
-    paddingVertical: 10,
-    borderRadius: 8,
-  },
-  retryBtnText: {
-    color: 'white',
-    fontWeight: 'bold',
   },
 });

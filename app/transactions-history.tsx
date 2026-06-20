@@ -1,8 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView, SafeAreaView, Alert } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Alert } from 'react-native';
 import { useRouter, Stack } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { SafeAreaView } from 'react-native-safe-area-context';
+
+import { fetchJson } from '@/lib/api';
+import { useAuth } from '@/lib/auth-context';
 
 // تابع تبدیل اعداد به فارسی
 const toPersianNum = (num: string | number) => {
@@ -19,6 +22,7 @@ const formatPrice = (price: number) => {
 
 export default function TransactionsHistoryScreen() {
   const router = useRouter();
+  const { userId, userToken, isAuthenticated } = useAuth();
   const [filter, setFilter] = useState('all'); // all, deposit, withdraw
   
   // داده‌های تراکنش
@@ -27,22 +31,26 @@ export default function TransactionsHistoryScreen() {
   // دریافت اطلاعات از API هنگام لود شدن صفحه
   useEffect(() => {
     fetchTransactions();
-  }, []);
+  }, [isAuthenticated, userId, userToken]);
 
   const fetchTransactions = async () => {
     try {
-      const userId = await AsyncStorage.getItem('userId');
-      if (!userId) return;
+      if (!isAuthenticated || !userId) {
+        router.replace('/login' as any);
+        return;
+      }
 
-      const response = await fetch('http://mazhikeabi.com/API/get_transactions.php', {
+      const data = await fetchJson<any>('get_transactions.php', {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
+          Accept: 'application/json',
+          'Content-Type': 'application/x-www-form-urlencoded',
         },
-        body: JSON.stringify({ user_id: userId }),
+        body: new URLSearchParams({
+          user_id: userId,
+          ...(userToken ? { api_token: userToken, token: userToken, user_token: userToken } : {}),
+        }).toString(),
       });
-
-      const data = await response.json();
 
       // فرض بر این است که API ساختار status/success دارد و داده‌ها در data.data هستند
       if (data.status === 'true' || data.success) {
@@ -50,6 +58,10 @@ export default function TransactionsHistoryScreen() {
       }
     } catch (error) {
       console.log('Error fetching transactions:', error);
+      if (error instanceof Error) {
+        console.log('[Transactions] error message:', error.message);
+        console.log('[Transactions] error cause:', error.cause);
+      }
     }
   };
 
@@ -207,6 +219,7 @@ const styles = StyleSheet.create({
   },
   headerTitle: {
     fontSize: 16,
+    fontFamily: 'Vazirmatn',
     fontWeight: 'bold',
     color: '#1f2937',
   },
@@ -244,10 +257,11 @@ const styles = StyleSheet.create({
   tabText: {
     color: '#6b7280',
     fontSize: 13,
+    fontFamily: 'Vazirmatn',
     fontWeight: '500',
   },
   tabTextActive: {
-    color: '#10a37f', // هم‌رنگ با تم داشبورد
+    color: '#0ed874', // هم‌رنگ با تم داشبورد
     fontWeight: 'bold',
   },
   listContainer: {
@@ -277,6 +291,7 @@ const styles = StyleSheet.create({
   },
   txTitle: {
     fontSize: 14,
+    fontFamily: 'Vazirmatn',
     fontWeight: 'bold',
     color: '#374151',
     textAlign: 'right',
@@ -284,6 +299,7 @@ const styles = StyleSheet.create({
   },
   txDateCode: {
     fontSize: 11,
+    fontFamily: 'Vazirmatn',
     color: '#9ca3af',
     textAlign: 'right',
     marginTop: 2,
@@ -295,16 +311,18 @@ const styles = StyleSheet.create({
   },
   txAmount: {
     fontSize: 15,
+    fontFamily: 'Vazirmatn',
     fontWeight: 'bold',
     textAlign: 'left',
     marginBottom: 6,
   },
   currencyText: {
     fontSize: 10,
+    fontFamily: 'Vazirmatn',
     fontWeight: 'normal',
   },
   textAmountGreen: {
-    color: '#10a37f', // هماهنگ با تم سبز
+    color: '#0ed874', // هماهنگ با تم سبز
   },
   textAmountRed: {
     color: '#ef4444',
@@ -318,13 +336,14 @@ const styles = StyleSheet.create({
   },
   badgeText: {
     fontSize: 10,
+    fontFamily: 'Vazirmatn',
     fontWeight: 'bold',
   },
   bgPending: { backgroundColor: '#fef3c7' },
   textPending: { color: '#d97706' },
   
   bgApproved: { backgroundColor: '#e6f6f2' }, // هماهنگ با تم داشبورد
-  textApproved: { color: '#10a37f' },
+  textApproved: { color: '#0ed874' },
   
   bgRejected: { backgroundColor: '#fee2e2' },
   textRejected: { color: '#dc2626' },
@@ -346,12 +365,14 @@ const styles = StyleSheet.create({
   },
   emptyStateTitle: {
     fontSize: 16,
+    fontFamily: 'Vazirmatn',
     fontWeight: 'bold',
     color: '#374151',
     marginBottom: 8,
   },
   emptyStateSub: {
     fontSize: 13,
+    fontFamily: 'Vazirmatn',
     color: '#9ca3af',
     textAlign: 'center',
   },
