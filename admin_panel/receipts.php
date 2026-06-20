@@ -86,41 +86,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             $previousStatus = (string)($transaction['status'] ?? '');
             $userId = (int)($transaction['user_id'] ?? 0);
-            $amount = (float)($transaction['amount'] ?? 0);
+            $amount = (int)($transaction['amount'] ?? 0);
 
             $updateStmt = db()->prepare("UPDATE transactions SET status = ? WHERE id = ?");
             $updateStmt->execute([$status, $id]);
 
             if ($status === 'approved' && $previousStatus !== 'approved') {
-                $columnExistsStmt = db()->prepare("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'users' AND column_name = 'balance'");
-                $columnExistsStmt->execute();
-                $usersBalanceColumnExists = (int)$columnExistsStmt->fetchColumn() > 0;
-
-                if ($usersBalanceColumnExists) {
-                    $creditStmt = db()->prepare("UPDATE users SET balance = COALESCE(balance, 0) + ? WHERE id = ?");
-                    $creditStmt->execute([$amount, $userId]);
-                } elseif (table_exists('wallets')) {
-                    $walletColumnStmt = db()->prepare("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'wallets' AND column_name = 'balance'");
-                    $walletColumnStmt->execute();
-                    $walletsBalanceColumnExists = (int)$walletColumnStmt->fetchColumn() > 0;
-
-                    if ($walletsBalanceColumnExists) {
-                        $walletUserColumnStmt = db()->prepare("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'wallets' AND column_name = 'user_id'");
-                        $walletUserColumnStmt->execute();
-                        $walletUserColumnExists = (int)$walletUserColumnStmt->fetchColumn() > 0;
-
-                        if ($walletUserColumnExists) {
-                            $walletCheckStmt = db()->prepare("SELECT id FROM wallets WHERE user_id = ? LIMIT 1");
-                            $walletCheckStmt->execute([$userId]);
-                            $walletId = (int)$walletCheckStmt->fetchColumn();
-
-                            if ($walletId > 0) {
-                                $walletUpdateStmt = db()->prepare("UPDATE wallets SET balance = COALESCE(balance, 0) + ? WHERE id = ?");
-                                $walletUpdateStmt->execute([$amount, $walletId]);
-                            }
-                        }
-                    }
-                }
+                $creditStmt = db()->prepare("UPDATE users SET balance = balance + ? WHERE id = ?");
+                $creditStmt->execute([$amount, $userId]);
             }
 
             db()->commit();

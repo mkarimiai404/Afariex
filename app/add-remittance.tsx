@@ -59,6 +59,68 @@ type AddRemittanceResponse = {
   };
 };
 
+const persianUnits = ['', 'یک', 'دو', 'سه', 'چهار', 'پنج', 'شش', 'هفت', 'هشت', 'نه'];
+const persianTeens = ['ده', 'یازده', 'دوازده', 'سیزده', 'چهارده', 'پانزده', 'شانزده', 'هفده', 'هجده', 'نوزده'];
+const persianTens = ['', '', 'بیست', 'سی', 'چهل', 'پنجاه', 'شصت', 'هفتاد', 'هشتاد', 'نود'];
+const persianHundreds = ['', 'صد', 'دویست', 'سیصد', 'چهارصد', 'پانصد', 'ششصد', 'هفتصد', 'هشتصد', 'نهصد'];
+const persianScales = ['', 'هزار', 'میلیون', 'میلیارد'];
+
+const toPersianWords = (value: number) => {
+  const num = Math.floor(Math.abs(value));
+  if (num === 0) return 'صفر';
+
+  const convertChunk = (chunk: number) => {
+    const parts: string[] = [];
+    const hundreds = Math.floor(chunk / 100);
+    const tensUnits = chunk % 100;
+
+    if (hundreds) parts.push(persianHundreds[hundreds]);
+    if (tensUnits >= 10 && tensUnits < 20) {
+      parts.push(persianTeens[tensUnits - 10]);
+    } else {
+      const tens = Math.floor(tensUnits / 10);
+      const units = tensUnits % 10;
+      if (tens) parts.push(persianTens[tens]);
+      if (units) parts.push(persianUnits[units]);
+    }
+
+    return parts.filter(Boolean).join(' و ');
+  };
+
+  const chunks: string[] = [];
+  let remaining = num;
+  let scaleIndex = 0;
+
+  while (remaining > 0 && scaleIndex < persianScales.length) {
+    const chunk = remaining % 1000;
+    if (chunk > 0) {
+      const chunkWords = convertChunk(chunk);
+      chunks.unshift([chunkWords, persianScales[scaleIndex]].filter(Boolean).join(' '));
+    }
+    remaining = Math.floor(remaining / 1000);
+    scaleIndex += 1;
+  }
+
+  return chunks.filter(Boolean).join(' و ');
+};
+
+const toPersianCommaNumber = (value: number | string) => {
+  const numericValue = Number(value) || 0;
+  return numericValue.toLocaleString('en-US');
+};
+
+const getJalaliDate = () => {
+  try {
+    return new Intl.DateTimeFormat('fa-IR-u-ca-persian', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    }).format(new Date());
+  } catch {
+    return new Date().toLocaleDateString('fa-IR');
+  }
+};
+
 export default function AddRemittanceScreen() {
   const router = useRouter();
   const { userId, userToken, userName, userMobile } = useAuth();
@@ -84,6 +146,8 @@ export default function AddRemittanceScreen() {
   const [lastTrackingCode, setLastTrackingCode] = useState<string>('');
   const [lastAgencyAddress, setLastAgencyAddress] = useState<string>('');
   const [lastAgencyName, setLastAgencyName] = useState<string>('');
+  const [walletBalance, setWalletBalance] = useState<number | null>(null);
+  const [loadingWalletBalance, setLoadingWalletBalance] = useState(false);
 
   const selectedRate = useMemo(
     () => exchangeRates.find((rate) => Number(rate.id) === selectedRateId) || null,
@@ -108,31 +172,156 @@ export default function AddRemittanceScreen() {
     return `TMP-${Date.now().toString().slice(-8)}`;
   };
 
+  const fetchWalletBalance = async (currentUserId: string, currentToken: string) => {
+    if (!currentUserId || !currentToken) {
+      setWalletBalance(null);
+      return;
+    }
+
+    setLoadingWalletBalance(true);
+    try {
+      const payload = new URLSearchParams();
+      payload.append('user_id', currentUserId);
+      payload.append('id', currentUserId);
+      payload.append('uid', currentUserId);
+      payload.append('api_token', currentToken);
+      payload.append('token', currentToken);
+      payload.append('user_token', currentToken);
+
+      const response = await fetch(`${API_BASE_URL}/dashboard.php`, {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: payload.toString(),
+      });
+
+      const data = await response.json();
+      const balanceValue = data?.balance ?? data?.user?.balance ?? data?.data?.balance ?? data?.result?.balance;
+
+      if (balanceValue !== undefined && balanceValue !== null && balanceValue !== '') {
+        const parsedBalance = Number(balanceValue);
+        setWalletBalance(Number.isFinite(parsedBalance) ? parsedBalance : 0);
+      } else {
+        setWalletBalance(0);
+      }
+    } catch (err) {
+      console.error('API Error Details:', err);
+      setWalletBalance(0);
+    } finally {
+      setLoadingWalletBalance(false);
+    }
+  };
+
   const handleSavePdf = async () => {
     try {
+      const numericAmount = Number(amountToman || 0);
+      const formattedAmount = toPersianCommaNumber(numericAmount);
+      const amountInWords = toPersianWords(numericAmount);
+      const jalaliDate = getJalaliDate();
+      const destinationAddress = lastAgencyAddress || 'آدرس ثبت نشده';
+      const statusInPersian = 'در حال پردازش / آماده پرداخت';
+
       const html = `
-      <html dir="rtl">
+      <html dir="rtl" lang="fa">
         <head>
           <meta charset="utf-8" />
+          <meta name="viewport" content="width=device-width, initial-scale=1.0" />
           <style>
-            body { font-family: sans-serif; padding: 24px; direction: rtl; color:#0f172a; }
-            .card { border: 1px solid #d6f5e6; border-radius: 12px; padding: 16px; }
-            h2 { margin: 0 0 14px 0; color: #0f9f58; }
-            p { margin: 8px 0; line-height: 1.9; font-size: 14px; }
-            .code { background:#e8fff2; padding:6px 10px; border-radius:8px; display:inline-block; }
+            body {
+              margin: 0;
+              padding: 0;
+              direction: rtl;
+              font-family: Tahoma, Arial, sans-serif;
+              color: #0f172a;
+              background: #ffffff;
+            }
+            .page {
+              max-width: 720px;
+              margin: 0 auto;
+              padding: 28px 22px;
+            }
+            .card {
+              border: 1px solid #d6f5e6;
+              border-radius: 16px;
+              padding: 24px 20px;
+              box-shadow: 0 8px 24px rgba(15, 159, 88, 0.08);
+            }
+            .brand {
+              text-align: center;
+              font-size: 22px;
+              font-weight: 900;
+              color: #0f9f58;
+              margin-bottom: 10px;
+            }
+            .title {
+              text-align: center;
+              font-size: 18px;
+              font-weight: 900;
+              color: #111827;
+              margin-bottom: 22px;
+            }
+            .line {
+              font-size: 15px;
+              line-height: 2.1;
+              margin: 6px 0;
+              text-align: right;
+            }
+            .label {
+              font-weight: 900;
+              color: #111827;
+            }
+            .value {
+              font-weight: 700;
+              color: #1f2937;
+            }
+            .amount {
+              font-weight: 900;
+              color: #0f9f58;
+            }
+            .note {
+              margin-top: 20px;
+              padding-top: 16px;
+              border-top: 1px dashed #d1fae5;
+              font-size: 14px;
+              line-height: 2;
+              color: #374151;
+              text-align: center;
+            }
+            .footer {
+              margin-top: 18px;
+              text-align: center;
+              font-size: 13px;
+              color: #6b7280;
+              font-weight: 700;
+            }
           </style>
         </head>
         <body>
-          <div class="card">
-            <h2>رسید ثبت حواله</h2>
-            <p><strong>کد حواله:</strong> <span class="code">${lastTrackingCode}</span></p>
-            <p><strong>نام فرستنده:</strong> ${senderName}</p>
-            <p><strong>نام گیرنده:</strong> ${receiverName}</p>
-            <p><strong>شماره تماس گیرنده:</strong> ${receiverPhone}</p>
-            <p><strong>مبلغ تومان:</strong> ${amountToman}</p>
-            <p><strong>مبلغ افغانی:</strong> ${amountAfghani}</p>
-            <p><strong>نمایندگی:</strong> ${lastAgencyName || '-'}</p>
-            <p><strong>آدرس نمایندگی:</strong> ${lastAgencyAddress || '-'}</p>
+          <div class="page">
+            <div class="card">
+              <div class="brand">صرافی آفارایکس</div>
+              <div class="title">✅ تاییدیه شماره حواله ${lastTrackingCode}</div>
+
+              <div class="line"><span class="label">📅 تاریخ:</span> <span class="value">${jalaliDate}</span></div>
+              <div class="line"><span class="label">👤 فرستنده:</span> <span class="value">${senderName || '-'}</span></div>
+              <div class="line"><span class="label">👤 گیرنده:</span> <span class="value">${receiverName || '-'}</span></div>
+              <div class="line">
+                <span class="label">💰 مبلغ:</span>
+                <span class="amount">${formattedAmount}</span>
+                <span class="value">«${amountInWords}»</span>
+                <span class="value">تومان</span>
+              </div>
+              <div class="line"><span class="label">📍 مقصد:</span> <span class="value">${destinationAddress}</span></div>
+              <div class="line"><span class="label">وضعیت:</span> <span class="value">${statusInPersian}</span></div>
+
+              <div class="note">
+                مشتری گرامی، حواله شما با موفقیت ثبت شد. لطفا هنگام دریافت وجه، اصل تذکره یا کارت شناسایی معتبر به همراه داشته باشید.
+              </div>
+
+              <div class="footer">AfaraX Exchange</div>
+            </div>
           </div>
         </body>
       </html>`;
@@ -185,10 +374,17 @@ export default function AddRemittanceScreen() {
 
         setResolvedUserId(finalUserId);
         setResolvedApiToken(finalApiToken);
+
+        if (finalUserId && finalApiToken) {
+          await fetchWalletBalance(finalUserId, finalApiToken);
+        } else {
+          setWalletBalance(null);
+        }
       } catch (err) {
         console.error('API Error Details:', err);
         setResolvedUserId('');
         setResolvedApiToken('');
+        setWalletBalance(null);
       } finally {
         setLoadingAuth(false);
       }
@@ -244,6 +440,12 @@ export default function AddRemittanceScreen() {
   }, []);
 
   useEffect(() => {
+    if (resolvedUserId && resolvedApiToken) {
+      void fetchWalletBalance(resolvedUserId, resolvedApiToken);
+    }
+  }, [resolvedUserId, resolvedApiToken]);
+
+  useEffect(() => {
     if (!amountToman || !selectedRate) {
       setAmountAfghani('');
       return;
@@ -289,6 +491,22 @@ export default function AddRemittanceScreen() {
     }
     if (!senderName.trim() || !receiverName.trim() || !receiverPhone.trim()) {
       showError('خطا', 'نام فرستنده، گیرنده و شماره تماس الزامی است.');
+      return;
+    }
+    if (loadingWalletBalance) {
+      showError('خطا', 'در حال دریافت موجودی کیف پول هستیم. لطفاً چند لحظه دیگر تلاش کنید.');
+      return;
+    }
+    if (walletBalance === null) {
+      await fetchWalletBalance(resolvedUserId, resolvedApiToken);
+      const latestBalance = walletBalance ?? 0;
+      if (latestBalance === null || latestBalance <= 0) {
+        showError('خطا', 'ابتدا موجودی کیف پول خود را شارژ کنید.');
+        return;
+      }
+    }
+    if ((walletBalance ?? 0) <= 0) {
+      showError('خطا', 'ابتدا موجودی کیف پول خود را شارژ کنید.');
       return;
     }
 
