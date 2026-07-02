@@ -239,6 +239,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 $q = trim((string)($_GET['q'] ?? ''));
 $statusFilter = trim((string)($_GET['status'] ?? ''));
 $typeFilter = trim((string)($_GET['type'] ?? 'deposit'));
+$startDate = trim((string)($_GET['start_date'] ?? ''));
+$endDate = trim((string)($_GET['end_date'] ?? ''));
+$exportExcel = (string)($_GET['export'] ?? '') === 'excel';
+$exportPrint = (string)($_GET['export'] ?? '') === 'print';
 $page = max(1, (int)($_GET['page'] ?? 1));
 $perPage = 12;
 $offset = ($page - 1) * $perPage;
@@ -263,6 +267,22 @@ if ($q !== '') {
     $params[] = '%' . $q . '%';
 }
 
+if ($startDate !== '') {
+    $startDateSql = jalali_input_to_gregorian_datetime($startDate, false);
+    if ($startDateSql) {
+        $where[] = 't.created_at >= ?';
+        $params[] = $startDateSql;
+    }
+}
+
+if ($endDate !== '') {
+    $endDateSql = jalali_input_to_gregorian_datetime($endDate, true);
+    if ($endDateSql) {
+        $where[] = 't.created_at <= ?';
+        $params[] = $endDateSql;
+    }
+}
+
 $whereSql = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
 
 $countStmt = db()->prepare("SELECT COUNT(*) FROM transactions t LEFT JOIN users u ON t.user_id = u.id {$whereSql}");
@@ -276,20 +296,86 @@ if ($page > $totalPages) {
     $offset = ($page - 1) * $perPage;
 }
 
-$listStmt = db()->prepare("
+$limit = (int)$perPage;
+$offset = (int)$offset;
+$listSql = "
     SELECT t.id, t.user_id, t.amount, t.tracking_code, t.type, t.status, t.receipt_image, t.created_at, t.description, u.mobile as user_mobile
     FROM transactions t
     LEFT JOIN users u ON t.user_id = u.id
     {$whereSql}
     ORDER BY t.created_at DESC
-    LIMIT {$perPage} OFFSET {$offset}
-");
+    LIMIT {$limit} OFFSET {$offset}
+";
+$listStmt = db()->prepare($listSql);
 $listStmt->execute($params);
 $receipts = $listStmt->fetchAll();
 
 $sumStmt = db()->prepare("SELECT COALESCE(SUM(t.amount), 0) FROM transactions t LEFT JOIN users u ON t.user_id = u.id {$whereSql}");
 $sumStmt->execute($params);
 $totalAmount = (float)$sumStmt->fetchColumn();
+
+if ($exportExcel) {
+    $exportStmt = db()->prepare("
+        SELECT t.id, t.user_id, t.amount, t.tracking_code, t.type, t.status, t.receipt_image, t.created_at, t.description, u.mobile as user_mobile
+        FROM transactions t
+        LEFT JOIN users u ON t.user_id = u.id
+        {$whereSql}
+        ORDER BY t.created_at DESC
+    ");
+    $exportStmt->execute($params);
+    $exportRows = [];
+    while ($row = $exportStmt->fetch()) {
+        $exportRows[] = [
+            '#' . (string)$row['id'],
+            trim((string)($row['receipt_image'] ?? '')) !== '' ? (string)$row['receipt_image'] : 'بدون عکس',
+            (string)($row['user_mobile'] ?? 'نامشخص'),
+            (string)$row['amount'],
+            (string)($row['tracking_code'] ?? ''),
+            (string)($row['type'] === 'withdraw' ? 'برداشت' : 'واریز'),
+            status_fa((string)$row['status']),
+            (string)($row['description'] ?? ''),
+            to_jalali_datetime((string)$row['created_at']),
+        ];
+    }
+
+    export_xls_table(
+        'Transactions_Report_' . date('Ymd_His') . '.xls',
+        ['شناسه', 'تصویر', 'کاربر (موبایل)', 'مبلغ', 'کد رهگیری', 'نوع', 'وضعیت', 'توضیحات', 'تاریخ ثبت'],
+        $exportRows
+    );
+}
+
+if ($exportPrint) {
+    $printStmt = db()->prepare("
+        SELECT t.id, t.user_id, t.amount, t.tracking_code, t.type, t.status, t.receipt_image, t.created_at, t.description, u.mobile as user_mobile
+        FROM transactions t
+        LEFT JOIN users u ON t.user_id = u.id
+        {$whereSql}
+        ORDER BY t.created_at DESC
+    ");
+    $printStmt->execute($params);
+    $printRows = [];
+    while ($row = $printStmt->fetch()) {
+        $printRows[] = [
+            '#' . (string)$row['id'],
+            trim((string)($row['receipt_image'] ?? '')) !== '' ? 'تصویر موجود' : 'بدون عکس',
+            (string)($row['user_mobile'] ?? 'نامشخص'),
+            (string)$row['amount'],
+            (string)($row['tracking_code'] ?? ''),
+            (string)($row['type'] === 'withdraw' ? 'برداشت' : 'واریز'),
+            status_fa((string)$row['status']),
+            (string)($row['description'] ?? ''),
+            to_jalali_datetime((string)$row['created_at']),
+        ];
+    }
+
+    render_print_table_view(
+        'گزارش فیش‌های واریزی',
+        ['شناسه', 'تصویر', 'کاربر (موبایل)', 'مبلغ', 'کد رهگیری', 'نوع', 'وضعیت', 'توضیحات', 'تاریخ ثبت'],
+        $printRows,
+        'فیلتر بازه تاریخ اعمال شده است.'
+    );
+}
 
 render_page_start('فیش های واریزی', 'receipts');
 ?>
@@ -467,7 +553,7 @@ render_page_start('فیش های واریزی', 'receipts');
         border: 1px solid var(--receipt-border-soft);
         border-radius: var(--receipt-radius);
         box-shadow: var(--receipt-shadow);
-        overflow: hidden;
+        overflow: visible;
     }
 
     .receipt-list-header {
@@ -562,6 +648,8 @@ render_page_start('فیش های واریزی', 'receipts');
         border-color: var(--receipt-primary);
         box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.10);
     }
+    .datepicker-plot-area, .pwt-datepicker, .datepicker-container { z-index: 99999 !important; }
+    .receipt-filter-shell { overflow: visible !important; position: relative; }
 
     .receipt-filter-actions {
         display: flex;
@@ -767,8 +855,13 @@ render_page_start('فیش های واریزی', 'receipts');
         align-items: center;
         justify-content: center;
         gap: 8px;
-        /* تغییر برای جلوگیری از رفتن به ردیف بعدی */
         flex-wrap: nowrap;
+        white-space: nowrap;
+    }
+    .receipt-row-actions form {
+        margin: 0;
+        padding: 0;
+        display: inline-block;
     }
 
     .receipt-view-link {
@@ -1132,6 +1225,67 @@ render_page_start('فیش های واریزی', 'receipts');
         }
     }
 </style>
+<style>
+    .receipt-top-card,
+    .receipt-stat-card,
+    .receipt-list-card,
+    .receipt-modal-content {
+        border-radius: 18px !important;
+        border: 1px solid #dbe4ef !important;
+        box-shadow: 0 20px 45px rgba(15, 23, 42, 0.06) !important;
+    }
+    .receipt-list-card {
+        overflow: visible !important;
+    }
+    .receipt-table {
+        border-radius: 16px !important;
+        overflow: hidden !important;
+    }
+    .receipt-table th,
+    .receipt-table td {
+        padding: 16px 18px !important;
+        border-bottom: 1px solid #edf2f7 !important;
+    }
+    .receipt-table th {
+        background: #f8fafc !important;
+        color: #475569 !important;
+    }
+    .receipt-table tbody tr:hover td {
+        background: #fcfdff !important;
+    }
+    .receipt-add-button,
+    .receipt-filter-button,
+    .receipt-save-button,
+    .receipt-submit-button,
+    .receipt-print,
+    .receipt-view-link,
+    .receipt-reset-link,
+    .receipt-cancel-button {
+        border-radius: 12px !important;
+    }
+    .receipt-add-button,
+    .receipt-filter-button,
+    .receipt-save-button,
+    .receipt-submit-button,
+    .receipt-print {
+        background: linear-gradient(180deg, #3b82f6 0%, #2563eb 100%) !important;
+        box-shadow: 0 12px 24px rgba(59, 130, 246, 0.18) !important;
+    }
+    .receipt-view-link,
+    .receipt-reset-link {
+        background: #ffffff !important;
+        border: 1px solid #dbe4ef !important;
+        box-shadow: 0 6px 16px rgba(15, 23, 42, 0.04) !important;
+    }
+    .receipt-input,
+    .receipt-select,
+    .receipt-textarea,
+    .receipt-filter-control {
+        border-radius: 12px !important;
+        border-color: #dbe4ef !important;
+        background: #fff !important;
+    }
+</style>
 
 <div class="receipt-page">
 
@@ -1168,9 +1322,9 @@ render_page_start('فیش های واریزی', 'receipts');
         <div class="receipt-stat-card">
             <div class="receipt-stat-info">
                 <div class="receipt-stat-label">جمع مبلغ</div>
-                <div class="receipt-stat-value"><?= number_format($totalAmount) ?></div>
+                <div class="receipt-stat-value"><?= number_format($totalAmount) ?> <span style="font-size:14px;color:#64748b;">تومان</span></div>
             </div>
-            <div class="receipt-stat-icon">﷼</div>
+            <div class="receipt-stat-icon">تومان</div>
         </div>
     </div>
 
@@ -1293,8 +1447,22 @@ render_page_start('فیش های واریزی', 'receipts');
             <div class="receipt-list-count"><?= number_format($totalItems) ?> مورد</div>
         </div>
 
+        <div class="actions receipt-filter-shell" style="display:flex; align-items:center; gap:15px; flex-wrap:wrap; margin:0 24px 1.5rem; overflow:visible !important;">
+            <form method="get" class="actions" style="display:flex; align-items:center; gap:15px; flex-wrap:wrap; margin:0; overflow:visible !important;">
+                <input type="hidden" name="q" value="<?= e($q) ?>">
+                <input type="hidden" name="type" value="<?= e($typeFilter) ?>">
+                <input type="hidden" name="status" value="<?= e($statusFilter) ?>">
+                <input type="hidden" name="page" value="1">
+                <input type="text" name="start_date" class="receipt-filter-control js-persian-date" value="<?= e($startDate) ?>" placeholder="از تاریخ..." aria-label="از تاریخ" style="width:200px; max-width:200px;">
+                <input type="text" name="end_date" class="receipt-filter-control js-persian-date" value="<?= e($endDate) ?>" placeholder="تا تاریخ..." aria-label="تا تاریخ" style="width:200px; max-width:200px;">
+                <button type="submit" class="receipt-filter-button">فیلتر</button>
+            </form>
+            <a href="receipts.php?<?= e(http_build_query(array_merge($_GET, ['export' => 'excel']))) ?>" class="receipt-filter-button" style="text-decoration:none; display:inline-flex; align-items:center;">خروجی Excel</a>
+            <a href="receipts.php?<?= e(http_build_query(array_merge($_GET, ['export' => 'print']))) ?>" class="receipt-filter-button" style="text-decoration:none; display:inline-flex; align-items:center; background:#7c3aed; border-color:#7c3aed;">خروجی PDF</a>
+        </div>
+
         <div class="receipt-table-wrap">
-            <table class="receipt-table">
+            <table class="receipt-table" id="receiptsTable">
                 <thead>
                     <tr>
                         <th style="width:70px;">شناسه</th>
@@ -1404,7 +1572,7 @@ render_page_start('فیش های واریزی', 'receipts');
 
                                 <td>
                                     <span class="receipt-amount">
-                                        <?= number_format((float)$row['amount']) ?>
+                                        <?= number_format((float)$row['amount']) ?> تومان
                                     </span>
                                 </td>
 
@@ -1442,18 +1610,22 @@ render_page_start('فیش های واریزی', 'receipts');
                                     </span>
                                 </td>
 
-                                <td>
-                                    <div class="receipt-row-actions">
+                                <td class="text-nowrap">
+                                    <div class="d-flex flex-row align-items-center justify-content-center" style="gap: 8px; flex-wrap: nowrap;">
                                         <?php if ($imageUrl): ?>
-                                            <button type="button" onclick="previewImage('<?= e($imageUrl) ?>')" class="receipt-view-link">
+                                            <button type="button" onclick="previewImage('<?= e($imageUrl) ?>')" class="receipt-view-link btn-sm">
                                                 مشاهده
                                             </button>
                                         <?php else: ?>
                                             <span class="receipt-view-link disabled">بدون عکس</span>
                                         <?php endif; ?>
 
+                                        <a class="receipt-view-link btn-sm" href="view_transaction_receipt.php?id=<?= e((string)$row['id']) ?>" target="_blank" rel="noopener" style="text-decoration:none;">
+                                            نمایش رسید
+                                        </a>
+
                                         <?php if (can('edit')): ?>
-                                            <form method="post" class="receipt-status-form">
+                                            <form method="post" class="receipt-status-form m-0 p-0" style="display: inline-block;">
                                                 <input type="hidden" name="csrf_token" value="<?= e(csrf_token()) ?>">
                                                 <input type="hidden" name="action" value="change_status">
                                                 <input type="hidden" name="id" value="<?= (int)$row['id'] ?>">
@@ -1464,7 +1636,7 @@ render_page_start('فیش های واریزی', 'receipts');
                                                     <option value="rejected" <?= (string)$row['status'] === 'rejected' ? 'selected' : '' ?>>رد</option>
                                                 </select>
 
-                                                <button type="submit" class="receipt-save-button">ذخیره</button>
+                                                <button type="submit" class="receipt-save-button btn-sm">ذخیره</button>
                                             </form>
                                         <?php endif; ?>
                                     </div>

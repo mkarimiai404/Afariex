@@ -1,11 +1,11 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import React, { createContext, useContext, useMemo, useState } from 'react';
 
 type AuthSession = {
   userId: string | null;
   userToken: string | null;
   userName: string | null;
   userMobile: string | null;
+  userBalance: number | null;
 };
 
 type AuthContextValue = AuthSession & {
@@ -13,9 +13,8 @@ type AuthContextValue = AuthSession & {
   isInitialized: boolean;
   signIn: (session: Partial<AuthSession>) => void;
   signOut: () => void;
+  setUserBalance: (balance: number | null) => void;
 };
-
-const LEGACY_AUTH_KEYS = ['userId', 'userToken', 'userName', 'userMobile'];
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
@@ -25,22 +24,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     userToken: null,
     userName: null,
     userMobile: null,
+    userBalance: null,
   });
-  const [isInitialized, setIsInitialized] = useState(false);
-
-  useEffect(() => {
-    const clearLegacyStorage = async () => {
-      try {
-        await AsyncStorage.multiRemove(LEGACY_AUTH_KEYS);
-      } catch (error) {
-        console.log('[Auth] failed to clear legacy storage', error);
-      } finally {
-        setIsInitialized(true);
-      }
-    };
-
-    clearLegacyStorage();
-  }, []);
+  const [isInitialized, setIsInitialized] = useState(true);
 
   const value = useMemo<AuthContextValue>(
     () => ({
@@ -59,7 +45,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           userToken: null,
           userName: null,
           userMobile: null,
+          userBalance: null,
         });
+      },
+      setUserBalance: (balance) => {
+        setSession((prev) => ({
+          ...prev,
+          userBalance: balance,
+        }));
       },
     }),
     [session, isInitialized]

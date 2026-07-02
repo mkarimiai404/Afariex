@@ -111,7 +111,7 @@ export default function RegisterScreen() {
         style={{ flex: 1 }}
       >
         <ScrollView 
-          contentContainerStyle={styles.scrollContainer}
+          contentContainerStyle={styles.pageWrapper}
           keyboardShouldPersistTaps="handled"
         >
           <View style={styles.card}>
@@ -207,21 +207,26 @@ export default function RegisterScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f6f7f9',
+    backgroundColor: '#ffffff',
   },
-  scrollContainer: {
+  pageWrapper: {
     flexGrow: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    paddingVertical: 20,
+    width: '100%',
+    padding: 20,
+    paddingBottom: 70,
   },
   card: {
-    backgroundColor: '#ffffff',
-    width: '90%',
+    backgroundColor: 'transparent',
+    width: '100%',
     maxWidth: 420,
-    padding: 30,
-    borderRadius: 16,
-    elevation: 3,
+    padding: 0,
+    borderRadius: 0,
+    shadowColor: '#000',
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    elevation: 0,
   },
   header: { alignItems: 'center', marginBottom: 20 },
   title: { fontSize: 24, fontWeight: 'bold', color: '#333', marginBottom: 8, fontFamily: 'Vazirmatn' },

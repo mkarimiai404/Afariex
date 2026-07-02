@@ -187,6 +187,40 @@ render_page_start('داشبورد', 'index');
     color: #475569;
 }
 </style>
+<style>
+.modern-admin-panel .md-card {
+    border-radius: 18px !important;
+    border: 1px solid #dbe4ef !important;
+    box-shadow: 0 20px 45px rgba(15, 23, 42, 0.06) !important;
+}
+.modern-admin-panel .md-table-wrapper {
+    border-radius: 16px !important;
+    border: 1px solid #dbe4ef !important;
+    box-shadow: 0 20px 45px rgba(15, 23, 42, 0.05) !important;
+    overflow: hidden !important;
+}
+.modern-admin-panel .md-table th,
+.modern-admin-panel .md-table td {
+    padding: 16px 18px !important;
+    border-bottom: 1px solid #edf2f7 !important;
+}
+.modern-admin-panel .md-table th {
+    background: #f8fafc !important;
+    color: #475569 !important;
+    font-weight: 800 !important;
+}
+.modern-admin-panel .md-table tr:hover td {
+    background: #fcfdff !important;
+}
+.modern-admin-panel .md-btn {
+    border-radius: 12px !important;
+    border: 1px solid #bfdbfe !important;
+    box-shadow: 0 6px 16px rgba(15, 23, 42, 0.04) !important;
+}
+.modern-admin-panel .md-btn:hover {
+    border-color: #3b82f6 !important;
+}
+</style>
 
 <div class="modern-admin-panel">
     

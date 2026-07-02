@@ -1,26 +1,31 @@
 import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import * as ImagePicker from 'expo-image-picker';
-import { Stack, useRouter } from 'expo-router';
+import { Stack, useRouter, useRootNavigationState } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import React, { useCallback, useEffect, useState } from 'react';
-import { Linking, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { Linking, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { fetchJson } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { showError, showSuccess } from '@/lib/toast';
+import { AppBottomNav } from '@/components/app-bottom-nav';
+
+const API_BASE_URL = 'https://afariex.ir/API';
 
 // تابع تبدیل اعداد به فارسی
 const toPersianNum = (num: string | number) => {
-  if (!num) return '۰';
+  if (!num && num !== 0) return '۰';
   const farsiDigits = ['۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹'];
   return num.toString().replace(/\d/g, (x) => farsiDigits[parseInt(x)]);
 };
 
 export default function AddBalanceScreen() {
   const router = useRouter();
-  const { userId, userToken, isAuthenticated } = useAuth();
+  const rootNavigationState = useRootNavigationState();
+  const { userId, userToken, isAuthenticated, isInitialized } = useAuth();
+  const navigationReady = Boolean(rootNavigationState?.key);
   const [currentBalance, setCurrentBalance] = useState<number>(0);
   const [activeTab, setActiveTab] = useState<'gateway' | 'card' | 'rubika'>('gateway');
   
@@ -34,12 +39,11 @@ export default function AddBalanceScreen() {
   const [isLoading, setIsLoading] = useState(false);
 
   const fetchBalance = useCallback(async () => {
-    try {
-      if (!userId && !userToken) {
-        router.replace('/login' as any);
-        return;
-      }
+    if (!navigationReady || !isInitialized || !isAuthenticated) {
+      return;
+    }
 
+    try {
       const payload = new URLSearchParams();
       if (userId) {
         payload.append('user_id', userId);
@@ -52,7 +56,6 @@ export default function AddBalanceScreen() {
         payload.append('user_token', userToken);
       }
 
-      console.log('[AddBalance] requesting dashboard.php for user_id/token:', { userId, hasToken: Boolean(userToken) });
       const data = await fetchJson<any>('dashboard.php', {
         method: 'POST',
         headers: {
@@ -61,31 +64,26 @@ export default function AddBalanceScreen() {
         },
         body: payload.toString(),
       });
-      console.log('[AddBalance] dashboard.php parsed response:', data);
       const balanceValue = data?.balance ?? data?.user?.balance ?? data?.data?.balance ?? data?.result?.balance;
       if (balanceValue !== undefined && balanceValue !== null && balanceValue !== '') {
         setCurrentBalance(parseInt(String(balanceValue), 10));
-      } else {
-        console.warn('[AddBalance] balance field not found in response shape');
       }
     } catch (error) {
-      console.error('خطا در دریافت موجودی:', error);
-      if (error instanceof Error) {
-        console.log('[AddBalance] error message:', error.message);
-        console.log('[AddBalance] error cause:', error.cause);
-      }
       showError('خطا', 'دریافت موجودی ناموفق بود. تنظیمات آدرس API را بررسی کنید.');
     }
-  }, [router, userId, userToken]);
+  }, [isAuthenticated, isInitialized, navigationReady, userId, userToken]);
 
   // دریافت موجودی از سرور
   useEffect(() => {
+    if (!navigationReady || !isInitialized) return;
+
     if (!isAuthenticated) {
       router.replace('/login' as any);
       return;
     }
+
     fetchBalance();
-  }, [fetchBalance, isAuthenticated, router]);
+  }, [fetchBalance, isAuthenticated, isInitialized, navigationReady, router]);
 
   useFocusEffect(
     useCallback(() => {
@@ -121,58 +119,66 @@ export default function AddBalanceScreen() {
       return;
     }
     showSuccess('در حال انتقال', 'انتقال به درگاه پرداخت...');
-    // در صورت داشتن فایل درگاه پرداخت، لینک آن را اینجا قرار دهید
-    // مثلا: Linking.openURL(`${apiUrl('pay.php')}?amount=${gatewayAmount}`);
   };
 
-  // ارسال فرم کارت به کارت به بک‌اند
+  // ارسال فرم کارت به کارت به بک‌اند - اصلاح شده برای نسخه وب و موبایل
   const handleCardSubmit = async () => {
     if (!cardAmount || !trackingCode || !receiptImage) {
       showError('خطا', 'لطفا تمامی فیلدها را پر کرده و رسید را آپلود کنید.');
       return;
     }
 
+    if (!userId) {
+      showError('خطا', 'شناسه کاربر یافت نشد. لطفاً مجدداً وارد شوید.');
+      return;
+    }
+
     setIsLoading(true);
 
     try {
-      let formData = new FormData();
-      if (userId) formData.append('user_id', userId);
-      if (userToken) formData.append('api_token', userToken);
-      formData.append('amount', cardAmount);
-      formData.append('tracking_code', trackingCode);
-      
-      // تنظیمات عکس برای ارسال
-      let localUri = receiptImage.uri;
-      let filename = localUri.split('/').pop();
-      let match = /\.(\w+)$/.exec(filename);
-      let type = match ? `image/${match[1]}` : `image`;
-      
-      formData.append('receipt', { uri: localUri, name: filename, type } as any);
+      const formData = new FormData();
+      formData.append('user_id', String(userId));
+      formData.append('amount', String(cardAmount).trim());
+      formData.append('tracking_code', trackingCode.trim());
 
-      // لینک اتصال به API شما
-      const data = await fetchJson<any>('add-balance.php', {
+      // کلید طلایی برای حل مشکل آپلود در اکسپو وب (مرورگر) و موبایل
+      if (Platform.OS === 'web') {
+        const response = await fetch(receiptImage.uri);
+        const blob = await response.blob();
+        formData.append('receipt', blob, 'receipt.jpg');
+      } else {
+        formData.append('receipt', {
+          uri: receiptImage.uri,
+          name: 'receipt.jpg',
+          type: 'image/jpeg',
+        } as any);
+      }
+
+      const response = await fetch(`${API_BASE_URL}/add-balance.php`, {
         method: 'POST',
-        headers: {
-          Accept: 'application/json',
-        },
-        body: formData,
+        body: formData, // بدون قرار دادن هدر Content-Type
       });
 
-      if (data?.success || data?.status === 'success' || String(data?.message || '').includes('موفق')) {
+      const responseText = await response.text();
+      let data: any = {};
+
+      try {
+        data = responseText ? JSON.parse(responseText) : {};
+      } catch {
+        data = { success: false, message: responseText || 'پاسخ نامعتبر از سرور دریافت شد.' };
+      }
+
+      if (data?.status === 'success' || String(data?.message || '').includes('موفق')) {
         showSuccess('موفق', 'رسید شما با موفقیت ثبت شد و در انتظار تایید است.');
         setCardAmount('');
         setTrackingCode('');
         setReceiptImage(null);
       } else {
-        showError('خطا', 'خطا در ثبت رسید. لطفا دوباره تلاش کنید.');
+        showError('خطا', data?.message || 'خطا در ثبت رسید. لطفا دوباره تلاش کنید.');
       }
     } catch (error) {
       showError('خطا', 'مشکل در ارتباط با سرور.');
       console.error(error);
-      if (error instanceof Error) {
-        console.log('[AddBalance] submit error message:', error.message);
-        console.log('[AddBalance] submit error cause:', error.cause);
-      }
     } finally {
       setIsLoading(false);
     }
@@ -206,11 +212,17 @@ export default function AddBalanceScreen() {
           <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
             
             <View style={styles.balanceCard}>
-              <Text style={styles.balanceText}>موجودی کیف پول شما:</Text>
+              <Text style={styles.balanceText}>وضعیت حساب شما:</Text>
               {currentBalance > 0 ? (
-                <Text style={styles.balanceAmount}>{toPersianNum(currentBalance.toLocaleString())} تومان</Text>
+                <Text style={[styles.balanceAmount, { color: '#0ed874' }]}>
+                  {toPersianNum(currentBalance.toLocaleString())} تومان (طلبکار)
+                </Text>
+              ) : currentBalance < 0 ? (
+                <Text style={[styles.balanceAmount, { color: '#ef4444' }]}>
+                  {toPersianNum(Math.abs(currentBalance).toLocaleString())} تومان (بدهکار)
+                </Text>
               ) : (
-                <Text style={styles.balanceEmpty}>کیف پول خالی می‌باشد</Text>
+                <Text style={styles.balanceEmpty}>۰ تومان (حساب تسویه)</Text>
               )}
             </View>
 
@@ -285,23 +297,24 @@ export default function AddBalanceScreen() {
 
           </ScrollView>
         </View>
+        <AppBottomNav />
       </View>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: '#f5f7f9' },
-  outerBackground: { flex: 1, paddingHorizontal: 15, paddingTop: 50, paddingBottom: 40 },
-  boxedContainer: { flex: 1, backgroundColor: '#ffffff', borderRadius: 30, overflow: 'hidden', shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.05, shadowRadius: 15, elevation: 3 },
+  safeArea: { flex: 1, backgroundColor: '#ffffff' },
+  outerBackground: { flex: 1, backgroundColor: '#ffffff', paddingHorizontal: 18, paddingTop: 18, paddingBottom: 70 },
+  boxedContainer: { flex: 1, backgroundColor: '#ffffff', overflow: 'hidden', shadowOpacity: 0, shadowRadius: 0, elevation: 0 },
   customHeader: { flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingVertical: 20, borderBottomWidth: 1, borderBottomColor: '#f3f4f6' },
   backBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#f3f4f6', justifyContent: 'center', alignItems: 'center' },
   headerTitle: { fontSize: 16, fontWeight: 'bold', color: '#2d3748', fontFamily: 'Vazirmatn' },
-  scrollContent: { padding: 20, flexGrow: 1 },
+  scrollContent: { padding: 0, flexGrow: 1, paddingBottom: 70 },
   balanceCard: { alignItems: 'center', marginBottom: 20 },
   balanceText: { fontSize: 13, color: '#6b7280', marginBottom: 5, fontFamily: 'Vazirmatn' },
-  balanceAmount: { fontSize: 18, fontWeight: 'bold', color: '#1f2937', fontFamily: 'Vazirmatn' },
-  balanceEmpty: { fontSize: 15, fontWeight: 'bold', color: '#ef4444', fontFamily: 'Vazirmatn' },
+  balanceAmount: { fontSize: 18, fontWeight: 'bold', fontFamily: 'Vazirmatn' },
+  balanceEmpty: { fontSize: 15, fontWeight: 'bold', color: '#6b7280', fontFamily: 'Vazirmatn' },
   tabsContainer: { flexDirection: 'row-reverse', backgroundColor: '#f4f6f8', borderRadius: 12, padding: 4, marginBottom: 20 },
   tabBtn: { flex: 1, paddingVertical: 10, alignItems: 'center', borderRadius: 8 },
   tabBtnActive: { backgroundColor: '#0ed874' },

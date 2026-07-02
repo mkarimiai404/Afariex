@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Dimensions } from 'react-native';
-import { useRouter, Stack } from 'expo-router';
+import { AppState, View, Text, StyleSheet, TouchableOpacity, ScrollView } from 'react-native';
+import { useRouter, Stack, useRootNavigationState } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -8,47 +8,50 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { fetchJson } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
+import { AppBottomNav } from '@/components/app-bottom-nav';
 
-const { width } = Dimensions.get('window');
-
-// تابع تبدیل اعداد به فارسی
 const toPersianNum = (num: string | number) => {
   const farsiDigits = ['۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹'];
   return num.toString().replace(/\d/g, (x) => farsiDigits[parseInt(x)]);
 };
 
-// تبدیل قیمت با کاما و اعداد فارسی
 const formatPrice = (price: number) => {
-  const formatted = price.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  const formatted = price.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
   return toPersianNum(formatted);
+};
+
+const normalizeBalance = (value: unknown): number => {
+  const numericValue = Number(typeof value === 'string' ? value.replace(/,/g, '').trim() : value);
+  return Number.isFinite(numericValue) ? numericValue : 0;
 };
 
 export default function DashboardScreen() {
   const router = useRouter();
-  const { userId, userToken, userName, isAuthenticated } = useAuth();
+  const rootNavigationState = useRootNavigationState();
+  const navigationReady = Boolean(rootNavigationState?.key);
+  const { userId, userToken, userName, isAuthenticated, isInitialized } = useAuth();
   const [walletBalance, setWalletBalance] = useState(0);
-  const [unreadCount, setUnreadCount] = useState(1);
+  const unreadCount = 1;
 
   const fetchUserData = React.useCallback(async () => {
+    if (!navigationReady || !isInitialized) {
+      return;
+    }
+
     try {
-      if (!userId && !userToken) {
+      if (!userId || !userToken) {
         router.replace('/login' as any);
         return;
       }
 
       const payload = new URLSearchParams();
-      if (userId) {
-        payload.append('user_id', userId);
-        payload.append('id', userId);
-        payload.append('uid', userId);
-      }
-      if (userToken) {
-        payload.append('api_token', userToken);
-        payload.append('token', userToken);
-        payload.append('user_token', userToken);
-      }
+      payload.append('user_id', userId);
+      payload.append('id', userId);
+      payload.append('uid', userId);
+      payload.append('api_token', userToken);
+      payload.append('token', userToken);
+      payload.append('user_token', userToken);
 
-      console.log('[Dashboard] requesting dashboard.php for user_id/token:', { userId, hasToken: Boolean(userToken) });
       const data = await fetchJson<any>('dashboard.php', {
         method: 'POST',
         headers: {
@@ -58,192 +61,135 @@ export default function DashboardScreen() {
         body: payload.toString(),
       });
 
-      console.log('[Dashboard] dashboard.php parsed response:', data);
-
       const balanceValue =
         data?.balance ??
         data?.user?.balance ??
         data?.data?.balance ??
         data?.result?.balance;
 
-      console.log('[Dashboard] resolved balance field:', balanceValue);
-
-      if (balanceValue !== undefined && balanceValue !== null && balanceValue !== '') {
-        setWalletBalance(Number(balanceValue));
-      } else {
-        console.warn('[Dashboard] balance field not found in response shape');
-      }
+      setWalletBalance(normalizeBalance(balanceValue));
     } catch (error) {
       console.error('Error fetching balance:', error);
-      if (error instanceof Error) {
-        console.log('[Dashboard] error message:', error.message);
-        console.log('[Dashboard] error cause:', error.cause);
-      }
     }
-  }, [router, userId, userToken]);
+  }, [isInitialized, navigationReady, router, userId, userToken]);
 
   useEffect(() => {
-    if (!isAuthenticated) {
-      router.replace('/login' as any);
+    if (!navigationReady || !isInitialized) {
       return;
     }
+
+    if (!isAuthenticated) {
+      router.replace('/login' as any);
+      setWalletBalance(0);
+      return;
+    }
+
     fetchUserData();
-  }, [fetchUserData, isAuthenticated, router]);
+  }, [fetchUserData, isAuthenticated, isInitialized, navigationReady, router]);
 
   useFocusEffect(
     React.useCallback(() => {
-      if (isAuthenticated) {
+      if (navigationReady && isInitialized && isAuthenticated) {
         fetchUserData();
       }
-    }, [fetchUserData, isAuthenticated])
+    }, [fetchUserData, isAuthenticated, isInitialized, navigationReady])
   );
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      if (nextState === 'active' && navigationReady && isInitialized && isAuthenticated) {
+        fetchUserData();
+      }
+    });
+
+    return () => subscription.remove();
+  }, [fetchUserData, isAuthenticated, isInitialized, navigationReady]);
 
   return (
     <SafeAreaView style={styles.safeArea}>
-      {/* حذف هدر پیش‌فرض اکسپو روتر */}
       <Stack.Screen options={{ headerShown: false }} />
 
-      {/* پس‌زمینه اصلی که باعث میشه پنل به صورت باکس دیده بشه */}
       <View style={styles.outerBackground}>
-        
-        {/* باکس اصلی داشبورد با گوشه‌های گرد */}
-        <View style={styles.boxedContainer}>
-          
-          <ScrollView style={styles.mainContent} contentContainerStyle={{ paddingBottom: 100 }} showsVerticalScrollIndicator={false}>
-            
-            {/* هدر داخلی */}
-            <View style={styles.topHeader}>
-              <View style={styles.userInfo}>
-                <View style={styles.avatar}>
-                  <Ionicons name="person" size={22} color="#0ed874" />
-                </View>
-                <View style={styles.welcomeText}>
-                  <Text style={styles.welcomeSub}>سلام، خوش آمدید</Text>
-                  <Text style={styles.welcomeName}>{userName || 'کاربر گرامی'}</Text>
-                </View>
+        <ScrollView
+          style={styles.mainContent}
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
+        >
+          <View style={styles.topHeader}>
+            <View style={styles.userInfo}>
+              <View style={styles.avatar}>
+                <Ionicons name="person" size={22} color="#0ed874" />
               </View>
-
-              <TouchableOpacity 
-                style={styles.notificationBtn} 
-                onPress={() => router.push('/notifications' as any)}
-              >
-                <Ionicons name="notifications-outline" size={20} color="#4b5563" />
-                {unreadCount > 0 && (
-                  <View style={styles.notifBadgeIndicator} />
-                )}
-              </TouchableOpacity>
-            </View>
-
-            {/* کارت کیف پول با گرادیانت */}
-            <LinearGradient
-              colors={['#0ed874', '#0d8a6a']}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
-              style={styles.walletCard}
-            >
-              <View style={styles.walletDecoration} />
-              <Text style={styles.walletTitle}>موجودی کیف پول</Text>
-              <View style={styles.walletBalanceContainer}>
-                <Text style={styles.walletAmount}>{formatPrice(walletBalance)}</Text>
-                <Text style={styles.walletCurrency}>تومان</Text>
-              </View>
-
-              {/* دکمه‌های کیف پول - اصلاح شده */}
-              <View style={styles.walletActions}>
-                <TouchableOpacity style={styles.btnDeposit} onPress={() => router.push('/add-balance' as any)}>
-                  <Text style={styles.btnDepositText}>افزایش موجودی</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity style={styles.btnHistory} onPress={() => router.push('/transactions-history' as any)}>
-                  <Text style={styles.btnHistoryText}>تاریخچه</Text>
-                </TouchableOpacity>
-              </View>
-            </LinearGradient>
-
-            {/* بخش خدمات */}
-            <View style={styles.servicesSection}>
-              <Text style={styles.sectionTitle}>خدمات آفاریکس</Text>
-              
-              <View style={styles.servicesGrid}>
-                
-              {/* آیتم 1: فعال */}
-<TouchableOpacity style={styles.serviceItem} onPress={() => router.push('/add-remittance' as any)}>
-  <View style={[styles.iconWrapper, { backgroundColor: '#e3f2fd' }]}>
-    <MaterialCommunityIcons name="send" size={24} color="#1976d2" style={{ transform: [{ rotate: '-45deg' }] }} />
-  </View>
-  <Text style={styles.serviceText}>ارسال حواله</Text>
-</TouchableOpacity>
-
-
-                {/* آیتم 2: غیرفعال */}
-                <View style={[styles.serviceItem, styles.disabledService]}>
-                  <View style={styles.badgeSoon}><Text style={styles.badgeSoonText}>به زودی</Text></View>
-                  <View style={[styles.iconWrapper, { backgroundColor: '#fff3e0' }]}>
-                    <Ionicons name="flash" size={24} color="#f57c00" />
-                  </View>
-                  <Text style={styles.serviceText}>خرید شارژ</Text>
-                </View>
-
-                {/* آیتم 3: غیرفعال */}
-                <View style={[styles.serviceItem, styles.disabledService]}>
-                  <View style={styles.badgeSoon}><Text style={styles.badgeSoonText}>به زودی</Text></View>
-                  <View style={[styles.iconWrapper, { backgroundColor: '#e8f5e9' }]}>
-                    <Ionicons name="wallet" size={24} color="#388e3c" />
-                  </View>
-                  <Text style={styles.serviceText}>کیف پول</Text>
-                </View>
-
-                {/* آیتم 4: غیرفعال */}
-                <View style={[styles.serviceItem, styles.disabledService]}>
-                  <View style={styles.badgeSoon}><Text style={styles.badgeSoonText}>به زودی</Text></View>
-                  <View style={[styles.iconWrapper, { backgroundColor: '#fce4ec' }]}>
-                    <Ionicons name="car-sport" size={24} color="#c2185b" />
-                  </View>
-                  <Text style={styles.serviceText}>کرایه اسنپ</Text>
-                </View>
-
-                {/* آیتم 5: غیرفعال */}
-                <View style={[styles.serviceItem, styles.disabledService]}>
-                  <View style={styles.badgeSoon}><Text style={styles.badgeSoonText}>به زودی</Text></View>
-                  <View style={[styles.iconWrapper, { backgroundColor: '#f3e5f5' }]}>
-                    <Ionicons name="location" size={24} color="#7b1fa2" />
-                  </View>
-                  <Text style={styles.serviceText}>آدرس‌ها</Text>
-                </View>
-
-                {/* آیتم 6: غیرفعال */}
-                <View style={[styles.serviceItem, styles.disabledService]}>
-                  <View style={styles.badgeSoon}><Text style={styles.badgeSoonText}>به زودی</Text></View>
-                  <View style={[styles.iconWrapper, { backgroundColor: '#efebe9' }]}>
-                    <Ionicons name="headset" size={24} color="#5d4037" />
-                  </View>
-                  <Text style={styles.serviceText}>پشتیبانی</Text>
-                </View>
-
+              <View style={styles.welcomeText}>
+                <Text style={styles.welcomeSub}>سلام، خوش آمدید</Text>
+                <Text style={styles.welcomeName}>{userName || 'کاربر گرامی'}</Text>
               </View>
             </View>
-          </ScrollView>
 
-          {/* منوی پایین ثابت داخل باکس */}
-          <View style={styles.bottomNav}>
-            <TouchableOpacity style={[styles.navItem, styles.navItemActive]}>
-              <Ionicons name="home" size={22} color="#0ed874" />
-              <Text style={[styles.navText, styles.navTextActive]}>خانه</Text>
-            </TouchableOpacity>
-            
-            {/* دکمه آپدیت شده */}
-            <TouchableOpacity style={styles.navItem} onPress={() => router.push('/transactions-history' as any)}>
-              <Ionicons name="swap-horizontal" size={22} color="#718096" />
-              <Text style={styles.navText}>تراکنش‌ها</Text>
-            </TouchableOpacity>
-            
-            <TouchableOpacity style={styles.navItem} onPress={() => router.push('/profile' as any)}>
-              <Ionicons name="person-outline" size={22} color="#718096" />
-              <Text style={styles.navText}>پروفایل</Text>
+            <TouchableOpacity style={styles.notificationBtn} onPress={() => router.push('/notifications' as any)}>
+              <Ionicons name="notifications-outline" size={20} color="#4b5563" />
+              {unreadCount > 0 && <View style={styles.notifBadgeIndicator} />}
             </TouchableOpacity>
           </View>
 
-        </View>
+          <LinearGradient
+            colors={['#0ed874', '#0d8a6a']}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={styles.walletCard}
+          >
+            <View style={styles.walletDecoration} />
+            <Text style={styles.walletTitle}>موجودی کیف پول</Text>
+            <View style={styles.walletBalanceContainer}>
+              <Text style={styles.walletAmount}>{formatPrice(walletBalance)}</Text>
+              <Text style={styles.walletCurrency}>تومان</Text>
+            </View>
+
+            <View style={styles.walletActions}>
+              <TouchableOpacity style={styles.btnDeposit} onPress={() => router.push('/add-balance' as any)}>
+                <Text style={styles.btnDepositText}>افزایش موجودی</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity style={styles.btnHistory} onPress={() => router.push('/transactions-history' as any)}>
+                <Text style={styles.btnHistoryText}>تاریخچه</Text>
+              </TouchableOpacity>
+            </View>
+          </LinearGradient>
+
+          <View style={styles.servicesSection}>
+            <Text style={styles.sectionTitle}>خدمات آفاریکس</Text>
+
+            <View style={styles.servicesGrid}>
+              <TouchableOpacity style={styles.serviceItem} onPress={() => router.push('/add-remittance' as any)}>
+                <View style={[styles.iconWrapper, { backgroundColor: '#e3f2fd' }]}>
+                  <MaterialCommunityIcons
+                    name="send"
+                    size={24}
+                    color="#1976d2"
+                    style={{ transform: [{ rotate: '-45deg' }] }}
+                  />
+                </View>
+                <Text style={styles.serviceText}>حواله</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity style={styles.serviceItem} onPress={() => router.push('/add-balance' as any)}>
+                <View style={[styles.iconWrapper, { backgroundColor: '#e8f5e9' }]}>
+                  <Ionicons name="wallet" size={24} color="#388e3c" />
+                </View>
+                <Text style={styles.serviceText}>کیف پول</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity style={styles.serviceItem} onPress={() => router.push('/profile' as any)}>
+                <View style={[styles.iconWrapper, { backgroundColor: '#eef6ff' }]}>
+                  <Ionicons name="headset" size={24} color="#0ea5e9" />
+                </View>
+                <Text style={styles.serviceText}>پشتیبانی</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </ScrollView>
+
+        <AppBottomNav />
       </View>
     </SafeAreaView>
   );
@@ -252,36 +198,26 @@ export default function DashboardScreen() {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: '#f5f7f9', 
+    backgroundColor: '#ffffff',
   },
   outerBackground: {
     flex: 1,
-    paddingHorizontal: 15,
-    paddingTop: 50,
-    paddingBottom: 40,
-    justifyContent: 'center',
-  },
-  boxedContainer: {
-    flex: 1,
     backgroundColor: '#ffffff',
-    borderRadius: 30, 
-    overflow: 'hidden',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.05,
-    shadowRadius: 15,
-    elevation: 3,
   },
   mainContent: {
     flex: 1,
   },
+  scrollContent: {
+    flexGrow: 1,
+    paddingHorizontal: 18,
+    paddingTop: 18,
+    paddingBottom: 70,
+  },
   topHeader: {
-    flexDirection: 'row',
+    flexDirection: 'row-reverse',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingTop: 24,
-    paddingBottom: 15,
+    paddingBottom: 20,
   },
   userInfo: {
     flexDirection: 'row',
@@ -335,7 +271,6 @@ const styles = StyleSheet.create({
     borderColor: '#ffffff',
   },
   walletCard: {
-    marginHorizontal: 20,
     marginBottom: 20,
     borderRadius: 20,
     padding: 20,
@@ -409,7 +344,7 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
   servicesSection: {
-    paddingHorizontal: 20,
+    paddingTop: 4,
   },
   sectionTitle: {
     fontSize: 14,
@@ -421,21 +356,16 @@ const styles = StyleSheet.create({
   },
   servicesGrid: {
     flexDirection: 'row-reverse',
-    flexWrap: 'wrap',
-    justifyContent: 'flex-start',
-    gap: 10,
+    justifyContent: 'space-between',
+    gap: 12,
   },
   serviceItem: {
-    width: (width - 90) / 3, 
+    flex: 1,
     alignItems: 'center',
-    marginBottom: 15,
-  },
-  disabledService: {
-    opacity: 0.6,
   },
   iconWrapper: {
-    width: 48,
-    height: 48,
+    width: 52,
+    height: 52,
     borderRadius: 16,
     justifyContent: 'center',
     alignItems: 'center',
@@ -446,61 +376,6 @@ const styles = StyleSheet.create({
     fontFamily: 'Vazirmatn',
     color: '#2d3748',
     fontWeight: '500',
-  },
-  badgeSoon: {
-    position: 'absolute',
-    top: -5,
-    right: 0,
-    backgroundColor: '#e9d5ff',
-    paddingVertical: 2,
-    paddingHorizontal: 6,
-    borderRadius: 8,
-    zIndex: 2,
-  },
-  badgeSoonText: {
-    color: '#7e22ce',
-    fontSize: 8,
-    fontFamily: 'Vazirmatn',
-    fontWeight: 'bold',
-  },
-  bottomNav: {
-    position: 'absolute',
-    bottom: 20,
-    left: 20,
-    right: 20,
-    backgroundColor: '#fff',
-    flexDirection: 'row-reverse',
-    justifyContent: 'space-around',
-    alignItems: 'center',
-    height: 64,
-    borderRadius: 32,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 5 },
-    shadowOpacity: 0.08,
-    shadowRadius: 15,
-    elevation: 8,
-    zIndex: 10,
-    borderWidth: 1,
-    borderColor: '#f3f4f6',
-  },
-  navItem: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 8,
-    paddingHorizontal: 16,
-    borderRadius: 20,
-    gap: 4,
-  },
-  navItemActive: {
-    backgroundColor: '#e6f6f2',
-  },
-  navText: {
-    fontSize: 10,
-    fontFamily: 'Vazirmatn',
-    color: '#718096',
-  },
-  navTextActive: {
-    color: '#0ed874',
-    fontWeight: 'bold',
+    textAlign: 'center',
   },
 });

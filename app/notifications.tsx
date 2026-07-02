@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
-import { Stack, useRouter } from 'expo-router';
+import { Stack, useRouter, useRootNavigationState } from 'expo-router';
 import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -7,6 +7,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { fetchJson } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { showError } from '@/lib/toast';
+import { AppBottomNav } from '@/components/app-bottom-nav';
 
 const toPersianNum = (num: string | number) => {
   if (!num) return '';
@@ -16,6 +17,7 @@ const toPersianNum = (num: string | number) => {
 
 export default function NotificationsScreen() {
   const router = useRouter();
+  const rootNavigationState = useRootNavigationState();
   const { userToken, userId, isAuthenticated } = useAuth();
   const [notifications, setNotifications] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -79,8 +81,9 @@ export default function NotificationsScreen() {
 
 
   useEffect(() => {
+    if (!rootNavigationState?.key) return;
     fetchNotifications();
-  }, [isAuthenticated, userId, userToken]);
+  }, [isAuthenticated, userId, userToken, rootNavigationState?.key]);
 
   const renderNotification = ({ item }: { item: any }) => (
     <View style={[styles.notificationCard, item.is_read == 0 && styles.unreadCard]}>
@@ -130,6 +133,7 @@ export default function NotificationsScreen() {
           )}
 
         </View>
+        <AppBottomNav />
       </View>
     </SafeAreaView>
   );
@@ -138,24 +142,22 @@ export default function NotificationsScreen() {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: '#f5f7f9', 
+    backgroundColor: '#ffffff', 
   },
   outerBackground: {
     flex: 1,
-    paddingHorizontal: 15,
-    paddingTop: 50,
-    paddingBottom: 40,
+    backgroundColor: '#ffffff',
+    paddingHorizontal: 18,
+    paddingTop: 18,
+    paddingBottom: 70,
   },
   boxedContainer: {
     flex: 1,
     backgroundColor: '#ffffff',
-    borderRadius: 30, 
     overflow: 'hidden',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.05,
-    shadowRadius: 15,
-    elevation: 3,
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    elevation: 0,
   },
   customHeader: {
     flexDirection: 'row-reverse',
@@ -188,19 +190,17 @@ const styles = StyleSheet.create({
   },
   listContainer: {
     padding: 15,
+    paddingBottom: 70,
   },
   notificationCard: {
     flexDirection: 'row-reverse',
-    backgroundColor: '#f9fafb',
+    backgroundColor: '#ffffff',
     padding: 15,
-    borderRadius: 15,
     marginBottom: 10,
-    borderWidth: 1,
-    borderColor: '#e5e7eb',
+    borderWidth: 0,
   },
   unreadCard: {
-    backgroundColor: '#e6f6f2',
-    borderColor: '#0ed874',
+    backgroundColor: '#f5fbf8',
   },
   iconContainer: {
     marginLeft: 15,

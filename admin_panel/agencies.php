@@ -7,6 +7,10 @@ require_permission('view');
 $perPage = 10;
 $page = max(1, (int)($_GET['page'] ?? 1));
 $offset = ($page - 1) * $perPage;
+$startDate = trim((string)($_GET['start_date'] ?? ''));
+$endDate = trim((string)($_GET['end_date'] ?? ''));
+$exportExcel = (string)($_GET['export'] ?? '') === 'excel';
+$exportPrint = (string)($_GET['export'] ?? '') === 'print';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     verify_csrf_or_fail($_POST['csrf_token'] ?? null);
@@ -63,14 +67,80 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-$totalRows = (int)db()->query('SELECT COUNT(*) FROM agencies')->fetchColumn();
-$totalPages = max(1, (int)ceil($totalRows / $perPage));
+$where = [];
+$params = [];
 
-$stmt = db()->prepare('SELECT id, name, address, phone, created_at FROM agencies ORDER BY id DESC LIMIT :limit OFFSET :offset');
-$stmt->bindValue(':limit', $perPage, PDO::PARAM_INT);
-$stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
-$stmt->execute();
+if ($startDate !== '') {
+    $startDateSql = jalali_input_to_gregorian_datetime($startDate, false);
+    if ($startDateSql) {
+        $where[] = 'created_at >= ?';
+        $params[] = $startDateSql;
+    }
+}
+
+if ($endDate !== '') {
+    $endDateSql = jalali_input_to_gregorian_datetime($endDate, true);
+    if ($endDateSql) {
+        $where[] = 'created_at <= ?';
+        $params[] = $endDateSql;
+    }
+}
+
+$whereSql = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
+
+$countStmt = db()->prepare("SELECT COUNT(*) FROM agencies {$whereSql}");
+$countStmt->execute($params);
+$totalRows = (int)$countStmt->fetchColumn();
+$totalPages = max(1, (int)ceil($totalRows / $perPage));
+$limit = (int)$perPage;
+$offset = (int)$offset;
+
+$stmt = db()->prepare("SELECT id, name, address, phone, created_at FROM agencies {$whereSql} ORDER BY id DESC LIMIT {$limit} OFFSET {$offset}");
+$stmt->execute($params);
 $rows = $stmt->fetchAll();
+
+if ($exportExcel) {
+    $exportStmt = db()->prepare("SELECT id, name, address, phone, created_at FROM agencies {$whereSql} ORDER BY id DESC");
+    $exportStmt->execute($params);
+    $exportRows = [];
+    while ($row = $exportStmt->fetch()) {
+        $exportRows[] = [
+            '#' . (string)$row['id'],
+            (string)$row['name'],
+            (string)$row['address'],
+            (string)($row['phone'] ?? '-'),
+            to_jalali_datetime((string)$row['created_at']),
+        ];
+    }
+
+    export_xls_table(
+        'Agencies_Report_' . date('Ymd_His') . '.xls',
+        ['شناسه', 'نام', 'آدرس', 'شماره تماس', 'تاریخ ایجاد'],
+        $exportRows
+    );
+}
+
+if ($exportPrint) {
+    $printStmt = db()->prepare("SELECT id, name, address, phone, created_at FROM agencies {$whereSql} ORDER BY id DESC");
+    $printStmt->execute($params);
+    $printRows = [];
+    while ($row = $printStmt->fetch()) {
+        $printRows[] = [
+            '#' . (string)$row['id'],
+            (string)$row['name'],
+            (string)$row['address'],
+            (string)($row['phone'] ?? '-'),
+            to_jalali_datetime((string)$row['created_at']),
+        ];
+    }
+
+    render_print_table_view(
+        'گزارش نمایندگی‌ها',
+        ['شناسه', 'نام', 'آدرس', 'شماره تماس', 'تاریخ ایجاد'],
+        $printRows,
+        'فیلتر بازه تاریخ اعمال شده است.'
+    );
+}
 
 $csrf = csrf_token();
 
@@ -109,6 +179,8 @@ render_page_start('مدیریت نمایندگی‌ها', 'agencies');
     border-color: var(--primary, #3b82f6);
     box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
   }
+  .datepicker-plot-area, .pwt-datepicker, .datepicker-container { z-index: 99999 !important; }
+  .agencies-filter-shell { overflow: visible !important; position: relative; }
   .badge-id {
     background: #f1f5f9;
     padding: 4px 8px;
@@ -170,9 +242,47 @@ render_page_start('مدیریت نمایندگی‌ها', 'agencies');
     box-shadow: 0 4px 10px rgba(59, 130, 246, 0.2);
   }
 </style>
+<style>
+  .card {
+    border-radius: 18px !important;
+    border: 1px solid #dbe4ef !important;
+    box-shadow: 0 20px 45px rgba(15, 23, 42, 0.06) !important;
+  }
+  #agenciesTable {
+    border-radius: 16px !important;
+    overflow: hidden !important;
+  }
+  #agenciesTable th,
+  #agenciesTable td {
+    padding: 16px 18px !important;
+    border-bottom: 1px solid #edf2f7 !important;
+  }
+  #agenciesTable th {
+    background: #f8fafc !important;
+    color: #475569 !important;
+  }
+  #agenciesTable tbody tr:hover {
+    background-color: #fcfdff !important;
+  }
+  .filter-input,
+  .btn-sm,
+  .page-link {
+    border-radius: 12px !important;
+  }
+</style>
 
 <!-- کارت هدر -->
 <div class="card">
+  <div class="actions agencies-filter-shell" style="display:flex; align-items:center; gap:15px; flex-wrap:wrap; margin-bottom:1.5rem; overflow:visible !important;">
+    <form method="get" class="actions" style="display:flex; align-items:center; gap:15px; flex-wrap:wrap; margin:0; overflow:visible !important;">
+      <input type="hidden" name="page" value="1">
+      <input type="text" class="filter-input js-persian-date" name="start_date" value="<?= e($startDate) ?>" placeholder="از تاریخ..." aria-label="از تاریخ" style="width:200px; max-width:200px;">
+      <input type="text" class="filter-input js-persian-date" name="end_date" value="<?= e($endDate) ?>" placeholder="تا تاریخ..." aria-label="تا تاریخ" style="width:200px; max-width:200px;">
+      <button type="submit" class="btn btn-primary" style="height:36px;">فیلتر</button>
+    </form>
+    <a class="btn btn-light" style="color:#2563eb;border-color:#bfdbfe; text-decoration:none; display:inline-flex; align-items:center; height:36px;" href="agencies.php?<?= e(http_build_query(array_merge($_GET, ['export' => 'excel']))) ?>">خروجی Excel</a>
+    <a class="btn btn-light" style="color:#7c3aed;border-color:#ddd6fe; text-decoration:none; display:inline-flex; align-items:center; height:36px;" href="agencies.php?<?= e(http_build_query(array_merge($_GET, ['export' => 'print']))) ?>">خروجی PDF</a>
+  </div>
   <div class="actions modern-header">
     <h3>لیست نمایندگی‌ها</h3>
     <?php if (can('create')): ?>
@@ -244,7 +354,7 @@ render_page_start('مدیریت نمایندگی‌ها', 'agencies');
   <?php if ($totalPages > 1): ?>
   <div class="pagination">
     <?php for ($i = 1; $i <= $totalPages; $i++): ?>
-      <a class="page-link <?= $i === $page ? 'active' : '' ?>" href="agencies.php?page=<?= $i ?>"><?= $i ?></a>
+      <a class="page-link <?= $i === $page ? 'active' : '' ?>" href="agencies.php?<?= e(http_build_query(array_merge($_GET, ['page' => $i]))) ?>"><?= $i ?></a>
     <?php endfor; ?>
   </div>
   <?php endif; ?>
@@ -304,7 +414,7 @@ render_page_start('مدیریت نمایندگی‌ها', 'agencies');
   (function () {
     const table = document.getElementById('agenciesTable');
     if (!table) return;
-    const filters = table.querySelectorAll('.filter-row input');
+    const filters = table.querySelectorAll('.filter-row input[data-col]');
     const rows = Array.from(table.querySelectorAll('tbody tr:not(.filter-row)')); // فقط ردیف‌های دیتا
     
     function applyFilters() {

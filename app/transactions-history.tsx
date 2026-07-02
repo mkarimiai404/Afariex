@@ -1,185 +1,348 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Alert } from 'react-native';
-import { useRouter, Stack } from 'expo-router';
+import React, { useCallback, useEffect, useState } from 'react';
+import {
+  ActivityIndicator,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
+import { Stack, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { fetchJson } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
+import { AppBottomNav } from '@/components/app-bottom-nav';
 
-// تابع تبدیل اعداد به فارسی
-const toPersianNum = (num: string | number) => {
-  if (!num) return '';
-  const farsiDigits = ['۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹'];
-  return num.toString().replace(/\d/g, (x) => farsiDigits[parseInt(x)]);
+const API_URL = 'https://afariex.ir/API/transactions-history.php';
+
+type TransactionType = 'deposit' | 'withdraw' | 'remittance' | string;
+type FilterType = 'all' | 'deposit' | 'withdraw' | 'remittance';
+
+type TransactionItem = {
+  id: string;
+  raw_id: string;
+  source: string;
+  amount: string;
+  tracking_code: string;
+  type: TransactionType;
+  status: string;
+  receipt_image: string;
+  created_at: string;
+  description: string;
+  receipt_full_url: string;
 };
 
-// تبدیل قیمت با کاما
-const formatPrice = (price: number) => {
-  const formatted = price.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+const toSafeString = (value: unknown) => {
+  if (value === null || value === undefined) return '';
+  return String(value);
+};
+
+const normalizeTransaction = (item: any): TransactionItem => ({
+  id: toSafeString(item?.id),
+  raw_id: toSafeString(item?.raw_id),
+  source: toSafeString(item?.source),
+  amount: toSafeString(item?.amount),
+  tracking_code: toSafeString(item?.tracking_code),
+  type: toSafeString(item?.type),
+  status: toSafeString(item?.status),
+  receipt_image: toSafeString(item?.receipt_image),
+  created_at: toSafeString(item?.created_at),
+  description: toSafeString(item?.description),
+  receipt_full_url: toSafeString(item?.receipt_full_url),
+});
+
+const toPersianNum = (num: string | number) => {
+  if (num === null || num === undefined) return '';
+  const farsiDigits = ['۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹'];
+  return num.toString().replace(/\d/g, (x) => farsiDigits[Number(x)]);
+};
+
+const formatPrice = (value: number) => {
+  const safeValue = Number.isFinite(value) ? Math.abs(Math.round(value)) : 0;
+  const formatted = safeValue.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
   return toPersianNum(formatted);
+};
+
+const getTransactionMeta = (type: TransactionType) => {
+  if (type === 'deposit') {
+    return {
+      label: 'واریز وجه',
+      icon: 'arrow-down-circle-outline' as const,
+      iconColor: '#0ed874',
+      iconBackground: '#e6f6f2',
+      amountSign: '+',
+      amountColorStyle: styles.textAmountGreen,
+    };
+  }
+
+  if (type === 'remittance') {
+    return {
+      label: 'ثبت حواله',
+      icon: 'swap-horizontal-outline' as const,
+      iconColor: '#8b5cf6',
+      iconBackground: '#f3e8ff',
+      amountSign: '-',
+      amountColorStyle: styles.textAmountPurple,
+    };
+  }
+
+  return {
+    label: 'برداشت وجه',
+    icon: 'arrow-up-circle-outline' as const,
+    iconColor: '#ef4444',
+    iconBackground: '#fee2e2',
+    amountSign: '-',
+    amountColorStyle: styles.textAmountRed,
+  };
+};
+
+const getStatusMeta = (status: string) => {
+  const normalized = status?.toLowerCase?.() || '';
+
+  if (normalized === 'approved' || normalized === 'paid' || normalized === 'success' || normalized === 'completed') {
+    return {
+      text: 'موفق',
+      badgeStyle: styles.bgApproved,
+      textStyle: styles.textApproved,
+    };
+  }
+
+  if (normalized === 'rejected' || normalized === 'failed' || normalized === 'cancelled') {
+    return {
+      text: 'رد شده',
+      badgeStyle: styles.bgRejected,
+      textStyle: styles.textRejected,
+    };
+  }
+
+  return {
+    text: 'در انتظار',
+    badgeStyle: styles.bgPending,
+    textStyle: styles.textPending,
+  };
 };
 
 export default function TransactionsHistoryScreen() {
   const router = useRouter();
   const { userId, userToken, isAuthenticated } = useAuth();
-  const [filter, setFilter] = useState('all'); // all, deposit, withdraw
-  
-  // داده‌های تراکنش
-  const [transactions, setTransactions] = useState<any[]>([]);
 
-  // دریافت اطلاعات از API هنگام لود شدن صفحه
-  useEffect(() => {
-    fetchTransactions();
-  }, [isAuthenticated, userId, userToken]);
+  const [filter, setFilter] = useState<FilterType>('all');
+  const [transactions, setTransactions] = useState<TransactionItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [errorText, setErrorText] = useState('');
 
-  const fetchTransactions = async () => {
+  const fetchTransactions = useCallback(async () => {
     try {
-      if (!isAuthenticated || !userId) {
-        router.replace('/login' as any);
+      setErrorText('');
+
+      if (!isAuthenticated) {
+        setTransactions([]);
+        setErrorText('شما وارد حساب کاربری نشده‌اید.');
         return;
       }
 
-      const data = await fetchJson<any>('get_transactions.php', {
+      if (!userToken) {
+        setTransactions([]);
+        setErrorText('توکن کاربر در اپ پیدا نشد. لطفاً یک بار خارج شوید و دوباره وارد شوید.');
+        return;
+      }
+
+      const body = new URLSearchParams();
+      body.append('api_token', String(userToken));
+
+      if (userId !== null && userId !== undefined) {
+        body.append('user_id', String(userId));
+      }
+
+      const response = await fetch(API_URL, {
         method: 'POST',
         headers: {
           Accept: 'application/json',
-          'Content-Type': 'application/x-www-form-urlencoded',
+          'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
         },
-        body: new URLSearchParams({
-          user_id: userId,
-          ...(userToken ? { api_token: userToken, token: userToken, user_token: userToken } : {}),
-        }).toString(),
+        body: body.toString(),
       });
 
-      // فرض بر این است که API ساختار status/success دارد و داده‌ها در data.data هستند
-      if (data.status === 'true' || data.success) {
-        setTransactions(data.data || []);
+      const rawText = await response.text();
+
+      let data: any = null;
+
+      try {
+        data = JSON.parse(rawText);
+      } catch (jsonError) {
+        console.log('API RAW RESPONSE:', rawText);
+        setTransactions([]);
+        setErrorText('پاسخ API قابل خواندن نیست. احتمالاً خطای PHP یا HTML برگشته است.');
+        return;
       }
+
+      console.log('TRANSACTIONS API RESPONSE:', data);
+
+      if (data?.status === 'success') {
+        const list = Array.isArray(data.data) ? data.data.map(normalizeTransaction) : [];
+        setTransactions(list);
+        return;
+      }
+
+      setTransactions([]);
+      setErrorText(data?.message || 'خطای نامشخص در دریافت تراکنش‌ها.');
     } catch (error) {
-      console.log('Error fetching transactions:', error);
-      if (error instanceof Error) {
-        console.log('[Transactions] error message:', error.message);
-        console.log('[Transactions] error cause:', error.cause);
-      }
+      console.log('TRANSACTIONS FETCH ERROR:', error);
+      setTransactions([]);
+      setErrorText('ارتباط با سرور برقرار نشد.');
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
     }
+  }, [isAuthenticated, userId, userToken]);
+
+  useEffect(() => {
+    fetchTransactions();
+  }, [fetchTransactions]);
+
+  const onRefresh = () => {
+    setRefreshing(true);
+    fetchTransactions();
   };
 
-  // فیلتر کردن لیست تراکنش‌ها
-  const filteredTransactions = transactions.filter(tx => {
+  const filteredTransactions = transactions.filter((tx) => {
     if (filter === 'all') return true;
     return tx.type === filter;
   });
+
+  const tabs: { key: FilterType; label: string }[] = [
+    { key: 'all', label: 'همه' },
+    { key: 'deposit', label: 'واریزی‌ها' },
+    { key: 'withdraw', label: 'پرداختی‌ها' },
+    { key: 'remittance', label: 'حواله‌ها' },
+  ];
 
   return (
     <SafeAreaView style={styles.safeArea}>
       <Stack.Screen options={{ headerShown: false }} />
 
-      {/* پس‌زمینه اصلی برای حفظ ظاهر باکس‌دار مشابه داشبورد */}
       <View style={styles.outerBackground}>
         <View style={styles.boxedContainer}>
-          
-          {/* هدر */}
           <View style={styles.header}>
             <Text style={styles.headerTitle}>تاریخچه تراکنش‌ها</Text>
+
             <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
               <Ionicons name="chevron-forward" size={24} color="#4b5563" />
             </TouchableOpacity>
           </View>
 
-          {/* تب‌های فیلتر (سگمنت کنترل) */}
           <View style={styles.tabsWrapper}>
             <View style={styles.tabsContainer}>
-              <TouchableOpacity 
-                style={[styles.tabBtn, filter === 'all' && styles.tabBtnActive]} 
-                onPress={() => setFilter('all')}
-              >
-                <Text style={[styles.tabText, filter === 'all' && styles.tabTextActive]}>همه</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity 
-                style={[styles.tabBtn, filter === 'deposit' && styles.tabBtnActive]} 
-                onPress={() => setFilter('deposit')}
-              >
-                <Text style={[styles.tabText, filter === 'deposit' && styles.tabTextActive]}>واریزی‌ها</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity 
-                style={[styles.tabBtn, filter === 'withdraw' && styles.tabBtnActive]} 
-                onPress={() => setFilter('withdraw')}
-              >
-                <Text style={[styles.tabText, filter === 'withdraw' && styles.tabTextActive]}>پرداختی‌ها</Text>
-              </TouchableOpacity>
+              {tabs.map((tab) => (
+                <TouchableOpacity
+                  key={tab.key}
+                  style={[styles.tabBtn, filter === tab.key && styles.tabBtnActive]}
+                  onPress={() => setFilter(tab.key)}
+                >
+                  <Text style={[styles.tabText, filter === tab.key && styles.tabTextActive]}>
+                    {tab.label}
+                  </Text>
+                </TouchableOpacity>
+              ))}
             </View>
           </View>
 
-          {/* لیست تراکنش‌ها */}
-          <ScrollView contentContainerStyle={styles.listContainer} showsVerticalScrollIndicator={false}>
-            
-            {filteredTransactions.length === 0 ? (
-              // Empty State - نمایش زمانی که دیتایی نیست
+          <ScrollView
+            contentContainerStyle={styles.listContainer}
+            showsVerticalScrollIndicator={false}
+            refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+          >
+            {loading ? (
+              <View style={styles.emptyStateContainer}>
+                <ActivityIndicator size="large" color="#0ed874" />
+                <Text style={styles.loadingText}>در حال دریافت تراکنش‌ها...</Text>
+              </View>
+            ) : errorText ? (
+              <View style={styles.emptyStateContainer}>
+                <View style={styles.emptyIconCircle}>
+                  <Ionicons name="warning-outline" size={40} color="#ef4444" />
+                </View>
+
+                <Text style={styles.emptyStateTitle}>خطا در دریافت اطلاعات</Text>
+                <Text style={styles.emptyStateSub}>{errorText}</Text>
+
+                <TouchableOpacity style={styles.retryButton} onPress={fetchTransactions}>
+                  <Text style={styles.retryButtonText}>تلاش دوباره</Text>
+                </TouchableOpacity>
+              </View>
+            ) : filteredTransactions.length === 0 ? (
               <View style={styles.emptyStateContainer}>
                 <View style={styles.emptyIconCircle}>
                   <Ionicons name="receipt-outline" size={40} color="#9ca3af" />
                 </View>
+
                 <Text style={styles.emptyStateTitle}>تراکنشی یافت نشد</Text>
-                <Text style={styles.emptyStateSub}>در این دسته‌بندی هنوز هیچ تراکنشی ثبت نشده است.</Text>
+                <Text style={styles.emptyStateSub}>
+                  در این دسته‌بندی هنوز هیچ تراکنشی ثبت نشده است.
+                </Text>
               </View>
             ) : (
-              // رندر کردن لیست در صورت وجود دیتا
               filteredTransactions.map((tx, index) => {
-                let statusText = 'در انتظار';
-                let badgeStyle = styles.bgPending;
-                let badgeTextStyle = styles.textPending;
+                const transactionMeta = getTransactionMeta(tx.type);
+                const statusMeta = getStatusMeta(tx.status);
 
-                if (tx.status === 'approved') {
-                  statusText = 'موفق';
-                  badgeStyle = styles.bgApproved;
-                  badgeTextStyle = styles.textApproved;
-                } else if (tx.status === 'rejected') {
-                  statusText = 'رد شده';
-                  badgeStyle = styles.bgRejected;
-                  badgeTextStyle = styles.textRejected;
-                }
+                const parsedAmount = Number(tx.amount || 0);
+                const safeAmount = Number.isFinite(parsedAmount) ? parsedAmount : 0;
 
-                const isDeposit = tx.type === 'deposit';
-                const amountSign = isDeposit ? '+' : '-';
-                const amountColorStyle = isDeposit ? styles.textAmountGreen : styles.textAmountRed;
+                const titleText = tx.description || transactionMeta.label;
 
                 return (
-                  <View key={tx.id || index} style={styles.txCard}>
-                    
-                    {/* مقادیر سمت چپ (مبلغ و وضعیت) */}
+                  <View key={tx.id || `${tx.source}-${tx.raw_id}-${index}`} style={styles.txCard}>
+                    <View style={[styles.txIconCircle, { backgroundColor: transactionMeta.iconBackground }]}>
+                      <Ionicons
+                        name={transactionMeta.icon}
+                        size={22}
+                        color={transactionMeta.iconColor}
+                      />
+                    </View>
+
                     <View style={styles.txLeft}>
-                      <Text style={[styles.txAmount, amountColorStyle]}>
-                        {amountSign} {formatPrice(tx.amount || 0)} <Text style={styles.currencyText}>تومان</Text>
+                      <Text style={[styles.txAmount, transactionMeta.amountColorStyle]}>
+                        {transactionMeta.amountSign} {formatPrice(safeAmount)}{' '}
+                        <Text style={styles.currencyText}>تومان</Text>
                       </Text>
-                      <View style={[styles.badge, badgeStyle]}>
-                        <Text style={[styles.badgeText, badgeTextStyle]}>{statusText}</Text>
+
+                      <View style={[styles.badge, statusMeta.badgeStyle]}>
+                        <Text style={[styles.badgeText, statusMeta.textStyle]}>
+                          {statusMeta.text}
+                        </Text>
                       </View>
                     </View>
 
-                    {/* اطلاعات سمت راست (توضیحات و تاریخ) */}
                     <View style={styles.txRight}>
-                      <Text style={styles.txTitle}>{tx.description}</Text>
-                      <Text style={styles.txDateCode}>
-                        {toPersianNum(tx.created_at || '')}
-                      </Text>
-                      {tx.tracking_code && (
+                      <Text style={styles.txTitle}>{titleText}</Text>
+
+                      {!!tx.created_at && (
+                        <Text style={styles.txDateCode}>
+                          {toPersianNum(tx.created_at)}
+                        </Text>
+                      )}
+
+                      {!!tx.tracking_code && (
                         <Text style={styles.txDateCode}>
                           کد رهگیری: {toPersianNum(tx.tracking_code)}
                         </Text>
                       )}
-                    </View>
 
+                      {!!tx.receipt_full_url && (
+                        <Text style={styles.txDateCode}>رسید ثبت شده</Text>
+                      )}
+                    </View>
                   </View>
                 );
               })
             )}
-
           </ScrollView>
-
         </View>
+        <AppBottomNav />
       </View>
     </SafeAreaView>
   );
@@ -188,25 +351,22 @@ export default function TransactionsHistoryScreen() {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: '#f5f7f9',
+    backgroundColor: '#ffffff',
   },
   outerBackground: {
     flex: 1,
-    paddingHorizontal: 15,
-    paddingTop: 50,
-    paddingBottom: 40,
-    justifyContent: 'center',
+    backgroundColor: '#ffffff',
+    paddingHorizontal: 18,
+    paddingTop: 18,
+    paddingBottom: 70,
   },
   boxedContainer: {
     flex: 1,
     backgroundColor: '#ffffff',
-    borderRadius: 30,
     overflow: 'hidden',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.05,
-    shadowRadius: 15,
-    elevation: 3,
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    elevation: 0,
   },
   header: {
     flexDirection: 'row',
@@ -226,7 +386,12 @@ const styles = StyleSheet.create({
   backBtn: {
     position: 'absolute',
     right: 20,
-    padding: 5,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#f3f4f6',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   tabsWrapper: {
     padding: 15,
@@ -248,41 +413,44 @@ const styles = StyleSheet.create({
   },
   tabBtnActive: {
     backgroundColor: '#ffffff',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
-    shadowRadius: 3,
-    elevation: 2,
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    elevation: 0,
   },
   tabText: {
     color: '#6b7280',
-    fontSize: 13,
+    fontSize: 12,
     fontFamily: 'Vazirmatn',
     fontWeight: '500',
   },
   tabTextActive: {
-    color: '#0ed874', // هم‌رنگ با تم داشبورد
+    color: '#0ed874',
     fontWeight: 'bold',
   },
   listContainer: {
-    padding: 20,
+    padding: 0,
     flexGrow: 1,
+    paddingBottom: 70,
   },
   txCard: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     backgroundColor: '#ffffff',
-    borderRadius: 16,
     padding: 16,
     marginBottom: 12,
-    borderWidth: 1,
-    borderColor: '#f3f4f6',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.02,
-    shadowRadius: 4,
-    elevation: 1,
+    borderWidth: 0,
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    elevation: 0,
+  },
+  txIconCircle: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: 12,
   },
   txRight: {
     flex: 1,
@@ -322,10 +490,13 @@ const styles = StyleSheet.create({
     fontWeight: 'normal',
   },
   textAmountGreen: {
-    color: '#0ed874', // هماهنگ با تم سبز
+    color: '#0ed874',
   },
   textAmountRed: {
     color: '#ef4444',
+  },
+  textAmountPurple: {
+    color: '#8b5cf6',
   },
   badge: {
     paddingVertical: 4,
@@ -339,20 +510,30 @@ const styles = StyleSheet.create({
     fontFamily: 'Vazirmatn',
     fontWeight: 'bold',
   },
-  bgPending: { backgroundColor: '#fef3c7' },
-  textPending: { color: '#d97706' },
-  
-  bgApproved: { backgroundColor: '#e6f6f2' }, // هماهنگ با تم داشبورد
-  textApproved: { color: '#0ed874' },
-  
-  bgRejected: { backgroundColor: '#fee2e2' },
-  textRejected: { color: '#dc2626' },
-
+  bgPending: {
+    backgroundColor: '#fef3c7',
+  },
+  textPending: {
+    color: '#d97706',
+  },
+  bgApproved: {
+    backgroundColor: '#e6f6f2',
+  },
+  textApproved: {
+    color: '#0ed874',
+  },
+  bgRejected: {
+    backgroundColor: '#fee2e2',
+  },
+  textRejected: {
+    color: '#dc2626',
+  },
   emptyStateContainer: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
     marginTop: 60,
+    paddingHorizontal: 20,
   },
   emptyIconCircle: {
     width: 80,
@@ -369,11 +550,32 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     color: '#374151',
     marginBottom: 8,
+    textAlign: 'center',
   },
   emptyStateSub: {
     fontSize: 13,
     fontFamily: 'Vazirmatn',
     color: '#9ca3af',
     textAlign: 'center',
+    lineHeight: 22,
+  },
+  loadingText: {
+    marginTop: 12,
+    fontSize: 13,
+    fontFamily: 'Vazirmatn',
+    color: '#6b7280',
+  },
+  retryButton: {
+    marginTop: 18,
+    backgroundColor: '#0ed874',
+    paddingHorizontal: 22,
+    paddingVertical: 10,
+    borderRadius: 10,
+  },
+  retryButtonText: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontFamily: 'Vazirmatn',
+    fontWeight: 'bold',
   },
 });

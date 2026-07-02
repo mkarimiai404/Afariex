@@ -1,27 +1,29 @@
 import React, { useEffect } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Image, Dimensions } from 'react-native';
 import { Feather } from '@expo/vector-icons'; // برای آیکون پشتیبانی
-import { useRouter, Stack } from 'expo-router'; // Stack اضافه شد
+import { useRouter, Stack, useRootNavigationState } from 'expo-router'; // Stack اضافه شد
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAuth } from '@/lib/auth-context';
 
 export default function WelcomeScreen() {
   const router = useRouter();
+  const rootNavigationState = useRootNavigationState();
   const { isAuthenticated, isInitialized } = useAuth();
 
   useEffect(() => {
+    if (!rootNavigationState?.key) return;
     if (!isInitialized) return;
     if (isAuthenticated) {
       router.replace('/dashboard' as any);
     }
-  }, [isAuthenticated, isInitialized, router]);
+  }, [isAuthenticated, isInitialized, router, rootNavigationState?.key]);
 
   return (
     <SafeAreaView style={styles.container}>
       {/* این خط هدر پیش‌فرض را حذف می‌کند */}
       <Stack.Screen options={{ headerShown: false }} />
 
-      <View style={styles.card}>
+      <View style={styles.content}>
         {/* بخش لوگو */}
         <View style={styles.logoContainer}>
           <Image 
@@ -83,26 +85,16 @@ const { width } = Dimensions.get('window');
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f7f9fa',
+    backgroundColor: '#ffffff',
     justifyContent: 'center',
     alignItems: 'center',
   },
-  card: {
-    backgroundColor: '#ffffff',
-    width: '90%',
+  content: {
+    width: '100%',
     maxWidth: 420,
-    minHeight: 550,
-    borderRadius: 16,
-    paddingVertical: 40,
-    paddingHorizontal: 30,
+    padding: 20,
+    paddingBottom: 70,
     alignItems: 'center',
-    // تنظیمات سایه برای iOS
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.04,
-    shadowRadius: 24,
-    // تنظیمات سایه برای اندروید
-    elevation: 3,
   },
   logoContainer: {
     marginBottom: 20,

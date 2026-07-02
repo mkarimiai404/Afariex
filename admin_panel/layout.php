@@ -285,6 +285,188 @@ function render_page_start(string $title, string $activePage, bool $showSidebar 
       .topbar { flex-direction: column; gap: 12px; align-items: flex-start; }
     }
   </style>
+  <style>
+    /* Shared visual refresh inspired by receipt views */
+    .card {
+      border-radius: 18px !important;
+      border: 1px solid #dbe4ef !important;
+      box-shadow: 0 20px 45px rgba(15, 23, 42, 0.06) !important;
+      background: #ffffff !important;
+    }
+    .table-wrap,
+    .rm-table-container,
+    .receipt-table-wrap,
+    .md-table-wrapper {
+      border-radius: 16px !important;
+      border: 1px solid #dbe4ef !important;
+      box-shadow: 0 20px 45px rgba(15, 23, 42, 0.05) !important;
+      background: #ffffff !important;
+      overflow: hidden !important;
+    }
+    table {
+      border-collapse: separate !important;
+      border-spacing: 0 !important;
+    }
+    th,
+    td {
+      padding: 16px 18px !important;
+      border-bottom: 1px solid #edf2f7 !important;
+      vertical-align: middle !important;
+    }
+    th {
+      background: #f8fafc !important;
+      color: #475569 !important;
+      font-weight: 800 !important;
+      letter-spacing: 0.2px !important;
+      text-transform: none !important;
+    }
+    tr:hover td {
+      background: #fcfdff !important;
+    }
+    .btn,
+    .btn-toggle-add,
+    .btn-submit,
+    .btn-edit,
+    .btn-delete,
+    .btn-receipt,
+    .receipt-add-button,
+    .receipt-filter-button,
+    .receipt-save-button,
+    .receipt-submit-button,
+    .receipt-print,
+    .md-btn {
+      border-radius: 12px !important;
+      font-weight: 800 !important;
+      transition: all 160ms ease !important;
+    }
+    .btn-primary,
+    .btn-submit,
+    .btn-toggle-add,
+    .receipt-add-button,
+    .receipt-filter-button,
+    .receipt-save-button,
+    .receipt-submit-button,
+    .receipt-print {
+      background: linear-gradient(180deg, #3b82f6 0%, #2563eb 100%) !important;
+      color: #ffffff !important;
+      box-shadow: 0 12px 24px rgba(59, 130, 246, 0.18) !important;
+      border: 1px solid rgba(37, 99, 235, 0.2) !important;
+    }
+    .btn-light,
+    .btn-edit,
+    .receipt-view-link,
+    .btn-receipt,
+    .receipt-reset-link {
+      background: #ffffff !important;
+      color: #334155 !important;
+      border: 1px solid #dbe4ef !important;
+      box-shadow: 0 6px 16px rgba(15, 23, 42, 0.04) !important;
+    }
+    .btn-danger,
+    .btn-delete,
+    .receipt-cancel-button {
+      background: linear-gradient(180deg, #ef4444 0%, #dc2626 100%) !important;
+      color: #ffffff !important;
+      border: 1px solid rgba(220, 38, 38, 0.2) !important;
+      box-shadow: 0 12px 24px rgba(239, 68, 68, 0.18) !important;
+    }
+    .btn-primary:hover,
+    .btn-toggle-add:hover,
+    .btn-submit:hover,
+    .receipt-add-button:hover,
+    .receipt-filter-button:hover,
+    .receipt-save-button:hover,
+    .receipt-submit-button:hover,
+    .receipt-print:hover,
+    .md-btn:hover {
+      transform: translateY(-1px) !important;
+      box-shadow: 0 16px 28px rgba(59, 130, 246, 0.24) !important;
+    }
+    .btn-light:hover,
+    .btn-edit:hover,
+    .btn-receipt:hover,
+    .receipt-reset-link:hover,
+    .receipt-view-link:hover {
+      background: #f8fafc !important;
+      border-color: #cbd5e1 !important;
+    }
+    .actions,
+    .rm-actions,
+    .receipt-row-actions,
+    .md-actions {
+      gap: 10px !important;
+      align-items: center !important;
+      flex-wrap: wrap !important;
+    }
+    .inline-form {
+      display: inline-flex !important;
+    }
+    .input,
+    .select,
+    textarea,
+    .rm-input,
+    .rm-select,
+    .receipt-input,
+    .receipt-select,
+    .receipt-textarea,
+    .filter-input,
+    .receipt-filter-control {
+      border-radius: 12px !important;
+      border: 1px solid #dbe4ef !important;
+      background: #ffffff !important;
+      box-shadow: none !important;
+    }
+    .input:focus,
+    .select:focus,
+    textarea:focus,
+    .rm-input:focus,
+    .rm-select:focus,
+    .receipt-input:focus,
+    .receipt-select:focus,
+    .receipt-textarea:focus,
+    .filter-input:focus,
+    .receipt-filter-control:focus {
+      border-color: #3b82f6 !important;
+      box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.1) !important;
+      background: #ffffff !important;
+    }
+    .pagination,
+    .rm-pagination,
+    .receipt-pagination {
+      display: flex !important;
+      justify-content: center !important;
+      gap: 8px !important;
+      flex-wrap: wrap !important;
+    }
+    .page-link,
+    .receipt-page-link {
+      min-width: 40px !important;
+      height: 40px !important;
+      border-radius: 10px !important;
+      border: 1px solid #dbe4ef !important;
+      background: #ffffff !important;
+      box-shadow: 0 6px 16px rgba(15, 23, 42, 0.04) !important;
+    }
+    .page-link.active,
+    .receipt-page-link.active {
+      background: linear-gradient(180deg, #3b82f6 0%, #2563eb 100%) !important;
+      color: #ffffff !important;
+      border-color: transparent !important;
+    }
+    .modal,
+    .rm-modal-content,
+    .receipt-modal-content {
+      border-radius: 20px !important;
+      border: 1px solid #dbe4ef !important;
+      box-shadow: 0 25px 50px -12px rgba(15, 23, 42, 0.24) !important;
+    }
+    .modal-head,
+    .rm-modal-header,
+    .receipt-modal-header {
+      background: #f8fafc !important;
+      border-bottom: 1px solid #e2e8f0 !important;
+    }
+  </style>
 </head>
 <body>
 <?php if ($showSidebar): ?>
@@ -346,6 +528,44 @@ function render_page_end(bool $showSidebar = true): void
         if (event.target === backdrop) backdrop.classList.remove('open');
       });
     });
+  })();
+</script>
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/persian-datepicker@1.2.0/dist/css/persian-datepicker.min.css">
+<style>
+  .datepicker-plot-area,
+  .pwt-datepicker,
+  .datepicker-container {
+    z-index: 99999 !important;
+  }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/persian-date@1.1.0/dist/persian-date.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/persian-datepicker@1.2.0/dist/js/persian-datepicker.min.js"></script>
+<script>
+  (function () {
+    function initPersianDatepickers() {
+      if (!window.jQuery || !jQuery.fn || !jQuery.fn.persianDatepicker) return;
+      jQuery('.js-persian-date').each(function () {
+        const $input = jQuery(this);
+        if ($input.data('pdp-initialized')) return;
+        $input.data('pdp-initialized', true);
+        $input.persianDatepicker({
+          format: 'YYYY/MM/DD',
+          initialValue: false,
+          autoClose: true,
+          observer: true,
+          toolbox: {
+            enabled: false,
+          },
+        });
+      });
+    }
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initPersianDatepickers);
+    } else {
+      initPersianDatepickers();
+    }
   })();
 </script>
 </body>

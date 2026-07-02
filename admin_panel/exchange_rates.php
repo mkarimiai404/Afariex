@@ -7,6 +7,10 @@ require_permission('view');
 $perPage = 10;
 $page = max(1, (int)($_GET['page'] ?? 1));
 $offset = ($page - 1) * $perPage;
+$startDate = trim((string)($_GET['start_date'] ?? ''));
+$endDate = trim((string)($_GET['end_date'] ?? ''));
+$exportExcel = (string)($_GET['export'] ?? '') === 'excel';
+$exportPrint = (string)($_GET['export'] ?? '') === 'print';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     verify_csrf_or_fail($_POST['csrf_token'] ?? null);
@@ -52,17 +56,93 @@ $current = db()->query('
     FROM exchange_rates WHERE is_active = 1 ORDER BY id DESC LIMIT 1
 ')->fetch();
 
-$totalRows = (int)db()->query('SELECT COUNT(*) FROM exchange_rates')->fetchColumn();
-$totalPages = max(1, (int)ceil($totalRows / $perPage));
+$where = [];
+$params = [];
 
-$stmt = db()->prepare('
+if ($startDate !== '') {
+    $startDateSql = jalali_input_to_gregorian_datetime($startDate, false);
+    if ($startDateSql) {
+        $where[] = 'created_at >= ?';
+        $params[] = $startDateSql;
+    }
+}
+
+if ($endDate !== '') {
+    $endDateSql = jalali_input_to_gregorian_datetime($endDate, true);
+    if ($endDateSql) {
+        $where[] = 'created_at <= ?';
+        $params[] = $endDateSql;
+    }
+}
+
+$whereSql = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
+
+$countStmt = db()->prepare("SELECT COUNT(*) FROM exchange_rates {$whereSql}");
+$countStmt->execute($params);
+$totalRows = (int)$countStmt->fetchColumn();
+$totalPages = max(1, (int)ceil($totalRows / $perPage));
+$limit = (int)$perPage;
+$offset = (int)$offset;
+
+$stmt = db()->prepare("
     SELECT id, rate, afn_to_toman, toman_to_afn, effective_date, is_active, created_at
-    FROM exchange_rates ORDER BY id DESC LIMIT :limit OFFSET :offset
-');
-$stmt->bindValue(':limit', $perPage, PDO::PARAM_INT);
-$stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
-$stmt->execute();
+    FROM exchange_rates {$whereSql} ORDER BY id DESC LIMIT {$limit} OFFSET {$offset}
+");
+$stmt->execute($params);
 $rows = $stmt->fetchAll();
+
+if ($exportExcel) {
+    $exportStmt = db()->prepare("
+        SELECT id, rate, afn_to_toman, toman_to_afn, effective_date, is_active, created_at
+        FROM exchange_rates {$whereSql} ORDER BY id DESC
+    ");
+    $exportStmt->execute($params);
+    $exportRows = [];
+    while ($row = $exportStmt->fetch()) {
+        $exportRows[] = [
+            '#' . (string)$row['id'],
+            (string)$row['rate'],
+            (string)$row['afn_to_toman'],
+            (string)$row['toman_to_afn'],
+            (string)$row['effective_date'],
+            ((int)$row['is_active'] === 1 ? 'فعال' : 'غیرفعال'),
+            to_jalali_datetime((string)$row['created_at']),
+        ];
+    }
+
+    export_xls_table(
+        'Exchange_Rates_Report_' . date('Ymd_His') . '.xls',
+        ['شناسه', 'Rate', '۱ افغانی = تومان', '۱ تومان = افغانی', 'تاریخ موثر', 'وضعیت', 'تاریخ ثبت'],
+        $exportRows
+    );
+}
+
+if ($exportPrint) {
+    $printStmt = db()->prepare("
+        SELECT id, rate, afn_to_toman, toman_to_afn, effective_date, is_active, created_at
+        FROM exchange_rates {$whereSql} ORDER BY id DESC
+    ");
+    $printStmt->execute($params);
+    $printRows = [];
+    while ($row = $printStmt->fetch()) {
+        $printRows[] = [
+            '#' . (string)$row['id'],
+            (string)$row['rate'],
+            (string)$row['afn_to_toman'],
+            (string)$row['toman_to_afn'],
+            (string)$row['effective_date'],
+            ((int)$row['is_active'] === 1 ? 'فعال' : 'غیرفعال'),
+            to_jalali_datetime((string)$row['created_at']),
+        ];
+    }
+
+    render_print_table_view(
+        'گزارش نرخ ارز',
+        ['شناسه', 'Rate', '۱ افغانی = تومان', '۱ تومان = افغانی', 'تاریخ موثر', 'وضعیت', 'تاریخ ثبت'],
+        $printRows,
+        'فیلتر بازه تاریخ اعمال شده است.'
+    );
+}
 
 $csrf = csrf_token();
 
@@ -155,6 +235,8 @@ render_page_start('مدیریت نرخ ارز', 'rates');
     border-color: var(--primary, #3b82f6);
     box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
   }
+  .datepicker-plot-area, .pwt-datepicker, .datepicker-container { z-index: 99999 !important; }
+  .rates-filter-shell { overflow: visible !important; position: relative; }
   .badge-id {
     background: #f1f5f9;
     padding: 4px 8px;
@@ -218,6 +300,39 @@ render_page_start('مدیریت نرخ ارز', 'rates');
     box-shadow: 0 4px 10px rgba(59, 130, 246, 0.2);
   }
 </style>
+<style>
+  .card {
+    border-radius: 18px !important;
+    border: 1px solid #dbe4ef !important;
+    box-shadow: 0 20px 45px rgba(15, 23, 42, 0.06) !important;
+  }
+  .current-rate-box {
+    border-radius: 16px !important;
+    border: 1px solid #bfdbfe !important;
+    box-shadow: 0 12px 24px rgba(59, 130, 246, 0.08) !important;
+  }
+  #ratesTable {
+    border-radius: 16px !important;
+    overflow: hidden !important;
+  }
+  #ratesTable th,
+  #ratesTable td {
+    padding: 16px 18px !important;
+    border-bottom: 1px solid #edf2f7 !important;
+  }
+  #ratesTable th {
+    background: #f8fafc !important;
+    color: #475569 !important;
+  }
+  #ratesTable tbody tr:hover {
+    background-color: #fcfdff !important;
+  }
+  .filter-input,
+  .btn-deactivate,
+  .page-link {
+    border-radius: 12px !important;
+  }
+</style>
 
 <!-- کارت هدر و نرخ فعال -->
 <div class="card">
@@ -273,6 +388,16 @@ render_page_start('مدیریت نرخ ارز', 'rates');
 
 <!-- کارت جدول -->
 <div class="card">
+  <div class="actions rates-filter-shell" style="display:flex; align-items:center; gap:15px; flex-wrap:wrap; margin-bottom:1.5rem; overflow:visible !important;">
+    <form method="get" class="actions" style="display:flex; align-items:center; gap:15px; flex-wrap:wrap; margin:0; overflow:visible !important;">
+      <input type="hidden" name="page" value="1">
+      <input type="text" class="filter-input js-persian-date" name="start_date" value="<?= e($startDate) ?>" placeholder="از تاریخ..." aria-label="از تاریخ" style="width:200px; max-width:200px;">
+      <input type="text" class="filter-input js-persian-date" name="end_date" value="<?= e($endDate) ?>" placeholder="تا تاریخ..." aria-label="تا تاریخ" style="width:200px; max-width:200px;">
+      <button type="submit" class="btn btn-primary" style="height:36px;">فیلتر</button>
+    </form>
+    <a class="btn btn-light" style="color:#2563eb;border-color:#bfdbfe; text-decoration:none; display:inline-flex; align-items:center; height:36px;" href="exchange_rates.php?<?= e(http_build_query(array_merge($_GET, ['export' => 'excel']))) ?>">خروجی Excel</a>
+    <a class="btn btn-light" style="color:#7c3aed;border-color:#ddd6fe; text-decoration:none; display:inline-flex; align-items:center; height:36px;" href="exchange_rates.php?<?= e(http_build_query(array_merge($_GET, ['export' => 'print']))) ?>">خروجی PDF</a>
+  </div>
   <div class="table-wrap" style="border-radius: 12px; border: 1px solid #e2e8f0; overflow: hidden;">
     <table id="ratesTable" style="width: 100%; border-collapse: collapse;">
       <thead>
@@ -292,7 +417,7 @@ render_page_start('مدیریت نرخ ارز', 'rates');
           <th><input type="text" class="filter-input" data-col="3" placeholder="جستجو"></th>
           <th><input type="text" class="filter-input" data-col="4" placeholder="جستجو تاریخ"></th>
           <th><input type="text" class="filter-input" data-col="5" placeholder="وضعیت"></th>
-          <th><input type="text" class="filter-input" data-col="6" placeholder="تاریخ ثبت"></th>
+          <th></th>
         </tr>
       </thead>
       <tbody>
@@ -320,7 +445,7 @@ render_page_start('مدیریت نرخ ارز', 'rates');
   <?php if ($totalPages > 1): ?>
   <div class="pagination">
     <?php for ($i = 1; $i <= $totalPages; $i++): ?>
-      <a class="page-link <?= $i === $page ? 'active' : '' ?>" href="exchange_rates.php?page=<?= $i ?>"><?= $i ?></a>
+      <a class="page-link <?= $i === $page ? 'active' : '' ?>" href="exchange_rates.php?<?= e(http_build_query(array_merge($_GET, ['page' => $i]))) ?>"><?= $i ?></a>
     <?php endfor; ?>
   </div>
   <?php endif; ?>
@@ -372,7 +497,7 @@ render_page_start('مدیریت نرخ ارز', 'rates');
   (function () {
     const table = document.getElementById('ratesTable');
     if (!table) return;
-    const filters = table.querySelectorAll('.filter-row input');
+    const filters = table.querySelectorAll('.filter-row input[data-col]');
     // با انتخاب دقیق tbody tr، ردیف فیلتر که در thead است تداخل ایجاد نمی‌کند
     const rows = Array.from(table.querySelectorAll('tbody tr'));
     

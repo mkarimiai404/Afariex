@@ -5,6 +5,7 @@ import { Alert, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'rea
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAuth } from '@/lib/auth-context';
 import { showSuccess } from '@/lib/toast';
+import { AppBottomNav } from '@/components/app-bottom-nav';
 
 type MenuItem = {
   key: string;
@@ -31,7 +32,7 @@ export default function ProfileScreen() {
         style: 'destructive',
         onPress: async () => {
           signOut();
-          router.replace('/' as any);
+          router.replace('/login' as any);
         },
       },
     ]);
@@ -64,24 +65,23 @@ export default function ProfileScreen() {
         </View>
 
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.content}>
-          <View style={styles.card}>
-            {menuItems.map((item) => (
-              <TouchableOpacity key={item.key} style={styles.menuItem} onPress={item.action} activeOpacity={0.8}>
-                <View style={[styles.iconBox, { backgroundColor: `${item.accent}15` }]}>
-                  {item.iconSet === 'ionicons' ? (
-                    <Ionicons name={item.icon as keyof typeof Ionicons.glyphMap} size={22} color={item.accent} />
-                  ) : (
-                    <MaterialCommunityIcons name={item.icon as keyof typeof MaterialCommunityIcons.glyphMap} size={22} color={item.accent} />
-                  )}
-                </View>
+          {menuItems.map((item) => (
+            <TouchableOpacity key={item.key} style={styles.menuItem} onPress={item.action} activeOpacity={0.8}>
+              <View style={[styles.iconBox, { backgroundColor: `${item.accent}15` }]}>
+                {item.iconSet === 'ionicons' ? (
+                  <Ionicons name={item.icon as keyof typeof Ionicons.glyphMap} size={22} color={item.accent} />
+                ) : (
+                  <MaterialCommunityIcons name={item.icon as keyof typeof MaterialCommunityIcons.glyphMap} size={22} color={item.accent} />
+                )}
+              </View>
 
-                <Text style={styles.menuText}>{item.label}</Text>
+              <Text style={styles.menuText}>{item.label}</Text>
 
-                <Ionicons name="chevron-back" size={20} color="#9ca3af" />
-              </TouchableOpacity>
-            ))}
-          </View>
+              <Ionicons name="chevron-back" size={20} color="#9ca3af" />
+            </TouchableOpacity>
+          ))}
         </ScrollView>
+        <AppBottomNav />
       </View>
     </SafeAreaView>
   );
@@ -90,12 +90,14 @@ export default function ProfileScreen() {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: '#f4f7f5',
+    backgroundColor: '#ffffff',
   },
   container: {
     flex: 1,
-    paddingHorizontal: 16,
+    paddingHorizontal: 18,
     paddingTop: 18,
+    paddingBottom: 70,
+    backgroundColor: '#ffffff',
   },
   header: {
     flexDirection: 'row-reverse',
@@ -107,9 +109,7 @@ const styles = StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: '#ffffff',
-    borderWidth: 1,
-    borderColor: '#e5e7eb',
+    backgroundColor: '#f3f4f6',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -124,20 +124,7 @@ const styles = StyleSheet.create({
     height: 40,
   },
   content: {
-    paddingBottom: 24,
-  },
-  card: {
-    backgroundColor: '#ffffff',
-    borderRadius: 22,
-    paddingVertical: 8,
-    overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: '#e5e7eb',
-    shadowColor: '#111827',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.05,
-    shadowRadius: 18,
-    elevation: 3,
+    paddingBottom: 70,
   },
   menuItem: {
     flexDirection: 'row-reverse',

@@ -82,7 +82,7 @@ export default function LoginScreen() {
       {/* این خط هدر پیش‌فرض را حذف می‌کند */}
       <Stack.Screen options={{ headerShown: false }} />
 
-      <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
+      <ScrollView contentContainerStyle={styles.pageWrapper} keyboardShouldPersistTaps="handled">
         
         <View style={styles.loginCard}>
           <Text style={styles.title}>ورود به حساب</Text>
@@ -138,7 +138,6 @@ export default function LoginScreen() {
           </TouchableOpacity>
 
         </View>
-
       </ScrollView>
     </KeyboardAvoidingView>
   );
@@ -147,27 +146,28 @@ export default function LoginScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f6f7f9',
+    backgroundColor: '#ffffff',
   },
-  scrollContent: {
+  pageWrapper: {
     flexGrow: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    paddingVertical: 20,
+    width: '100%',
+    padding: 20,
+    paddingBottom: 70,
   },
   loginCard: {
-    backgroundColor: '#ffffff',
-    width: '90%',
+    backgroundColor: 'transparent',
+    width: '100%',
     maxWidth: 420,
-    minHeight: 550,
-    paddingHorizontal: 30,
-    paddingVertical: 40,
-    borderRadius: 16,
+    minHeight: 0,
+    paddingHorizontal: 0,
+    paddingVertical: 0,
+    borderRadius: 0,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.04,
-    shadowRadius: 24,
-    elevation: 3,
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    elevation: 0,
     justifyContent: 'center',
   },
   title: {

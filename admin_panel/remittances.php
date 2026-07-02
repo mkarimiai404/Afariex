@@ -9,6 +9,10 @@ require_permission('view');
 $perPage = 10;
 $page = max(1, (int)($_GET['page'] ?? 1));
 $offset = ($page - 1) * $perPage;
+$startDate = trim((string)($_GET['start_date'] ?? ''));
+$endDate = trim((string)($_GET['end_date'] ?? ''));
+$exportExcel = (string)($_GET['export'] ?? '') === 'excel';
+$exportPrint = (string)($_GET['export'] ?? '') === 'print';
 
 // دریافت نرخ فعال تبدیل افغانی به تومان
 $activeRateRow = db()->query('SELECT rate FROM exchange_rates WHERE is_active = 1 ORDER BY id DESC LIMIT 1')->fetch();
@@ -29,6 +33,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $amountToman = (float)($_POST['amount_toman'] ?? 0);
         $amountAfghani = (float)($_POST['amount_afghani'] ?? 0);
         $status = trim($_POST['status'] ?? 'pending');
+        $allowedStatuses = ['pending', 'approved', 'rejected', 'paid'];
 
         // پیدا کردن user_id از روی شماره موبایل
         $stmtUser = db()->prepare('SELECT id FROM users WHERE mobile = ?');
@@ -46,10 +51,56 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($agency === '' || $sender === '' || $receiver === '' || $amountToman <= 0 || $amountAfghani <= 0 || $status === '') {
                 flash('error', 'لطفاً تمام فیلدهای ضروری را وارد کنید.');
             } else {
-                $stmt = db()->prepare('INSERT INTO remittances (user_id, agency, sender, receiver, amount_toman, amount_afghani, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, NOW())');
-                $stmt->execute([$userId, $agency, $sender, $receiver, $amountToman, $amountAfghani, $status]);
-                log_activity('create', 'remittances', (int)db()->lastInsertId(), "ایجاد حواله برای کاربر {$mobile}");
-                flash('success', 'حواله با موفقیت ثبت شد.');
+                if (!in_array($status, $allowedStatuses, true)) {
+                    flash('error', 'وضعیت نامعتبر است.');
+                } else {
+                    db()->beginTransaction();
+
+                    try {
+                        $userStmt = db()->prepare('SELECT id, balance FROM users WHERE mobile = ? FOR UPDATE');
+                        $userStmt->execute([$mobile]);
+                        $userRow = $userStmt->fetch();
+
+                        if (!$userRow) {
+                            db()->rollBack();
+                            flash('error', 'کاربری با این شماره موبایل یافت نشد.');
+                            header('Location: remittances.php?page=' . $page);
+                            exit;
+                        }
+
+                        $currentBalance = (float)($userRow['balance'] ?? 0);
+
+                        if ($currentBalance < $amountToman) {
+                            db()->rollBack();
+                            flash('error', 'Insufficient Balance');
+                            header('Location: remittances.php?page=' . $page);
+                            exit;
+                        }
+
+                        $deductStmt = db()->prepare('UPDATE users SET balance = balance - ? WHERE id = ?');
+                        $deductStmt->execute([$amountToman, $userId]);
+
+                        $stmt = db()->prepare('INSERT INTO remittances (user_id, agency, sender, receiver, amount_toman, amount_afghani, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, NOW())');
+                        $stmt->execute([$userId, $agency, $sender, $receiver, $amountToman, $amountAfghani, $status]);
+                        $remittanceId = (int)db()->lastInsertId();
+
+                        $transactionStmt = db()->prepare("
+                            INSERT INTO transactions
+                                (user_id, amount, type, status, balance_applied, description)
+                            VALUES (?, ?, 'remittance', 'approved', 1, ?)
+                        ");
+                        $transactionStmt->execute([$userId, $amountToman, "رسید حواله #{$remittanceId}"]);
+
+                        log_activity('create', 'remittances', $remittanceId, "ایجاد حواله برای کاربر {$mobile}");
+                        db()->commit();
+                        flash('success', 'حواله با موفقیت ثبت شد.');
+                    } catch (Throwable $e) {
+                        if (db()->inTransaction()) {
+                            db()->rollBack();
+                        }
+                        throw $e;
+                    }
+                }
             }
         } elseif ($action === 'update') {
             require_permission('edit');
@@ -57,10 +108,93 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($id <= 0 || $agency === '' || $sender === '' || $receiver === '' || $amountToman <= 0 || $amountAfghani <= 0 || $status === '') {
                 flash('error', 'اطلاعات ویرایش نامعتبر است.');
             } else {
-                $stmt = db()->prepare('UPDATE remittances SET user_id = ?, agency = ?, sender = ?, receiver = ?, amount_toman = ?, amount_afghani = ?, status = ? WHERE id = ?');
-                $stmt->execute([$userId, $agency, $sender, $receiver, $amountToman, $amountAfghani, $status, $id]);
-                log_activity('update', 'remittances', $id, "ویرایش حواله #{$id}");
-                flash('success', 'حواله با موفقیت ویرایش شد.');
+                if (!in_array($status, $allowedStatuses, true)) {
+                    flash('error', 'وضعیت نامعتبر است.');
+                } else {
+                    db()->beginTransaction();
+
+                    try {
+                        $remittanceStmt = db()->prepare('SELECT user_id, amount_toman, status FROM remittances WHERE id = ? FOR UPDATE');
+                        $remittanceStmt->execute([$id]);
+                        $existingRemittance = $remittanceStmt->fetch();
+
+                        if (!$existingRemittance) {
+                            db()->rollBack();
+                            flash('error', 'اطلاعات ویرایش نامعتبر است.');
+                            header('Location: remittances.php?page=' . $page);
+                            exit;
+                        }
+
+                        $currentStatus = (string)($existingRemittance['status'] ?? '');
+                        $remittanceAmount = (float)($existingRemittance['amount_toman'] ?? 0);
+                        $ownerUserId = (int)($existingRemittance['user_id'] ?? 0);
+
+                        $stmt = db()->prepare('UPDATE remittances SET user_id = ?, agency = ?, sender = ?, receiver = ?, amount_toman = ?, amount_afghani = ?, status = ? WHERE id = ?');
+                        $stmt->execute([$userId, $agency, $sender, $receiver, $amountToman, $amountAfghani, $status, $id]);
+
+                        if ($status === 'rejected' && $currentStatus !== 'rejected' && $ownerUserId > 0) {
+                            $userStmt = db()->prepare('SELECT id, balance FROM users WHERE id = ? FOR UPDATE');
+                            $userStmt->execute([$ownerUserId]);
+                            $userRow = $userStmt->fetch();
+
+                            if (!$userRow) {
+                                db()->rollBack();
+                                flash('error', 'کاربر مربوط به این حواله یافت نشد.');
+                                header('Location: remittances.php?page=' . $page);
+                                exit;
+                            }
+
+                            $refundStmt = db()->prepare('UPDATE users SET balance = balance + ? WHERE id = ?');
+                            $refundStmt->execute([$remittanceAmount, $ownerUserId]);
+
+                            $transactionStmt = db()->prepare("
+                                INSERT INTO transactions
+                                    (user_id, amount, type, status, balance_applied, description)
+                                VALUES (?, ?, 'refund', 'approved', 1, 'برگشت وجه بابت رد حواله')
+                            ");
+                            $transactionStmt->execute([$ownerUserId, $remittanceAmount]);
+                        } elseif ($status === 'approved' && $currentStatus === 'rejected' && $ownerUserId > 0) {
+                            $userStmt = db()->prepare('SELECT id, balance FROM users WHERE id = ? FOR UPDATE');
+                            $userStmt->execute([$ownerUserId]);
+                            $userRow = $userStmt->fetch();
+
+                            if (!$userRow) {
+                                db()->rollBack();
+                                flash('error', 'کاربر مربوط به این حواله یافت نشد.');
+                                header('Location: remittances.php?page=' . $page);
+                                exit;
+                            }
+
+                            $userBalance = (float)($userRow['balance'] ?? 0);
+
+                            if ($userBalance < $remittanceAmount) {
+                                db()->rollBack();
+                                flash('error', 'موجودی کاربر برای تایید مجدد کافی نیست');
+                                header('Location: remittances.php?page=' . $page);
+                                exit;
+                            }
+
+                            $deductStmt = db()->prepare('UPDATE users SET balance = balance - ? WHERE id = ?');
+                            $deductStmt->execute([$remittanceAmount, $ownerUserId]);
+
+                            $transactionStmt = db()->prepare("
+                                INSERT INTO transactions
+                                    (user_id, amount, type, status, balance_applied, description)
+                                VALUES (?, ?, 'remittance', 'approved', 1, 'کسر مجدد وجه بابت تایید حواله')
+                            ");
+                            $transactionStmt->execute([$ownerUserId, $remittanceAmount]);
+                        }
+
+                        log_activity('update', 'remittances', $id, "ویرایش حواله #{$id}");
+                        db()->commit();
+                        flash('success', 'حواله با موفقیت ویرایش شد.');
+                    } catch (Throwable $e) {
+                        if (db()->inTransaction()) {
+                            db()->rollBack();
+                        }
+                        throw $e;
+                    }
+                }
             }
         }
         header('Location: remittances.php?page=' . $page);
@@ -83,20 +217,108 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-$totalRows = (int)db()->query('SELECT COUNT(*) FROM remittances')->fetchColumn();
-$totalPages = max(1, (int)ceil($totalRows / $perPage));
+$where = [];
+$params = [];
 
-$stmt = db()->prepare('
+if ($startDate !== '') {
+    $startDateSql = jalali_input_to_gregorian_datetime($startDate, false);
+    if ($startDateSql) {
+        $where[] = 'r.created_at >= ?';
+        $params[] = $startDateSql;
+    }
+}
+
+if ($endDate !== '') {
+    $endDateSql = jalali_input_to_gregorian_datetime($endDate, true);
+    if ($endDateSql) {
+        $where[] = 'r.created_at <= ?';
+        $params[] = $endDateSql;
+    }
+}
+
+$whereSql = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
+
+$countStmt = db()->prepare("SELECT COUNT(*) FROM remittances r LEFT JOIN users u ON r.user_id = u.id {$whereSql}");
+$countStmt->execute($params);
+$totalRows = (int)$countStmt->fetchColumn();
+$totalPages = max(1, (int)ceil($totalRows / $perPage));
+$limit = (int)$perPage;
+$offset = (int)$offset;
+
+$stmtSql = "
     SELECT r.id, r.user_id, u.mobile, r.agency, r.sender, r.receiver, r.amount_toman, r.amount_afghani, r.status, r.created_at 
     FROM remittances r
     LEFT JOIN users u ON r.user_id = u.id
+    {$whereSql}
     ORDER BY r.id DESC 
-    LIMIT :limit OFFSET :offset
-');
-$stmt->bindValue(':limit', $perPage, PDO::PARAM_INT);
-$stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
-$stmt->execute();
+    LIMIT {$limit} OFFSET {$offset}
+";
+$stmt = db()->prepare($stmtSql);
+$stmt->execute($params);
 $rows = $stmt->fetchAll();
+
+if ($exportExcel) {
+    $exportStmt = db()->prepare("
+        SELECT r.id, r.user_id, u.mobile, r.agency, r.sender, r.receiver, r.amount_toman, r.amount_afghani, r.status, r.created_at
+        FROM remittances r
+        LEFT JOIN users u ON r.user_id = u.id
+        {$whereSql}
+        ORDER BY r.id DESC
+    ");
+    $exportStmt->execute($params);
+    $exportRows = [];
+    while ($row = $exportStmt->fetch()) {
+        $exportRows[] = [
+            '#' . (string)$row['id'],
+            (string)($row['mobile'] ?? 'نامشخص'),
+            (string)$row['agency'],
+            (string)$row['sender'],
+            (string)$row['receiver'],
+            number_format((float)$row['amount_toman']),
+            number_format((float)$row['amount_afghani']),
+            status_fa((string)$row['status']),
+            to_jalali_datetime((string)$row['created_at']),
+        ];
+    }
+
+    export_xls_table(
+        'Remittances_Report_' . date('Ymd_His') . '.xls',
+        ['شناسه', 'موبایل کاربر', 'نمایندگی', 'فرستنده', 'گیرنده', 'مبلغ (تومان)', 'مبلغ (افغانی)', 'وضعیت', 'تاریخ'],
+        $exportRows
+    );
+}
+
+if ($exportPrint) {
+    $printStmt = db()->prepare("
+        SELECT r.id, r.user_id, u.mobile, r.agency, r.sender, r.receiver, r.amount_toman, r.amount_afghani, r.status, r.created_at
+        FROM remittances r
+        LEFT JOIN users u ON r.user_id = u.id
+        {$whereSql}
+        ORDER BY r.id DESC
+    ");
+    $printStmt->execute($params);
+    $printRows = [];
+    while ($row = $printStmt->fetch()) {
+        $printRows[] = [
+            '#' . (string)$row['id'],
+            (string)($row['mobile'] ?? 'نامشخص'),
+            (string)$row['agency'],
+            (string)$row['sender'],
+            (string)$row['receiver'],
+            number_format((float)$row['amount_toman']),
+            number_format((float)$row['amount_afghani']),
+            status_fa((string)$row['status']),
+            to_jalali_datetime((string)$row['created_at']),
+        ];
+    }
+
+    render_print_table_view(
+        'گزارش حواله‌ها',
+        ['شناسه', 'موبایل کاربر', 'نمایندگی', 'فرستنده', 'گیرنده', 'مبلغ (تومان)', 'مبلغ (افغانی)', 'وضعیت', 'تاریخ'],
+        $printRows,
+        'فیلتر بازه تاریخ اعمال شده است.'
+    );
+}
 
 $csrf = csrf_token();
 
@@ -134,17 +356,26 @@ render_page_start('مدیریت حواله‌ها', 'remittances');
     .filter-row th { padding: 8px 16px; background: #f1f5f9; border-bottom: 2px solid var(--rm-border); }
     .rm-filter-input { width: 100%; height: 36px; border: 1px solid #cbd5e1; border-radius: 8px; padding: 0 10px; font-size: 12px; outline: none; transition: var(--rm-transition); background: #fff; }
     .rm-filter-input:focus { border-color: var(--rm-primary); box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15); }
+    .datepicker-plot-area, .pwt-datepicker, .datepicker-container { z-index: 99999 !important; }
+    .rm-filter-shell { overflow: visible !important; position: relative; }
     .rm-badge { display: inline-flex; align-items: center; justify-content: center; padding: 6px 12px; border-radius: 99px; font-size: 12px; font-weight: 800; white-space: nowrap; }
     .status-pending { background: #fff7ed; color: #c2410c; border: 1px solid #fed7aa; }
     .status-approved { background: #ecfdf5; color: #047857; border: 1px solid #a7f3d0; }
     .status-rejected { background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; }
     .status-paid { background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; }
     .status-default { background: #f1f5f9; color: #475569; border: 1px solid #cbd5e1; }
-    .rm-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-    .btn-edit { background: #eff6ff; color: #2563eb; border: none; height: 36px; padding: 0 14px; border-radius: 8px; font-size: 13px; font-weight: 700; cursor: pointer; transition: var(--rm-transition); }
+    .rm-status-form { display: inline-flex; align-items: center; justify-content: center; gap: 6px; margin: 0; padding: 3px; border: 1px solid #dbe4ef; background: #f8fafc; border-radius: 9px; white-space: nowrap; }
+    .rm-status-select { width: 92px; height: 30px; border: none; outline: none; background: transparent; color: #334155; font-family: inherit; font-size: 12px; font-weight: 800; cursor: pointer; padding: 0 4px; }
+    .rm-status-save { height: 30px; padding: 0 10px; border: none; border-radius: 8px; background: linear-gradient(180deg, #3b82f6 0%, #2563eb 100%); color: #fff; font-size: 12px; font-weight: 800; cursor: pointer; white-space: nowrap; box-shadow: 0 8px 18px rgba(59, 130, 246, 0.18); }
+    .rm-status-save:hover { filter: brightness(1.02); }
+    .rm-actions { display: flex; align-items: center; justify-content: center; gap: 8px; flex-wrap: nowrap; white-space: nowrap; }
+    .rm-actions form { margin: 0; display: inline-flex; }
+    .btn-edit { background: #eff6ff; color: #2563eb; border: none; height: 32px; padding: 0 10px; border-radius: 8px; font-size: 12px; font-weight: 700; cursor: pointer; transition: var(--rm-transition); display: inline-flex; align-items: center; white-space: nowrap; }
     .btn-edit:hover { background: #dbeafe; }
-    .btn-delete { background: #fef2f2; color: var(--rm-danger); border: none; height: 36px; padding: 0 14px; border-radius: 8px; font-size: 13px; font-weight: 700; cursor: pointer; transition: var(--rm-transition); }
+    .btn-delete { background: #fef2f2; color: var(--rm-danger); border: none; height: 32px; padding: 0 10px; border-radius: 8px; font-size: 12px; font-weight: 700; cursor: pointer; transition: var(--rm-transition); display: inline-flex; align-items: center; white-space: nowrap; }
     .btn-delete:hover { background: #fee2e2; color: var(--rm-danger-hover); }
+    .btn-receipt { background: #ecfdf5; color: #047857; border: none; height: 32px; padding: 0 10px; border-radius: 8px; font-size: 12px; font-weight: 700; text-decoration: none; display: inline-flex; align-items: center; cursor: pointer; transition: var(--rm-transition); white-space: nowrap; }
+    .btn-receipt:hover { background: #d1fae5; }
     .rm-pagination { display: flex; justify-content: center; gap: 6px; margin-top: 24px; padding-top: 24px; border-top: 1px solid var(--rm-border); }
     .page-link { min-width: 36px; height: 36px; display: inline-flex; align-items: center; justify-content: center; border-radius: 8px; background: #f1f5f9; color: #475569; text-decoration: none; font-size: 14px; font-weight: 700; transition: var(--rm-transition); }
     .page-link:hover { background: #e2e8f0; color: #0f172a; }
@@ -169,6 +400,77 @@ render_page_start('مدیریت حواله‌ها', 'remittances');
     .persian-amount { font-size: 12px; color: var(--rm-primary); font-weight: 700; min-height: 18px; }
     .active-rate-info { font-size: 13px; color: var(--rm-muted); background: #f1f5f9; padding: 10px; border-radius: 8px; text-align: center; font-weight: bold; margin-bottom: 10px;}
 </style>
+<style>
+    .rm-actions-header,
+    .rm-panel,
+    .rm-modal-content {
+        border-radius: 18px !important;
+        border: 1px solid #dbe4ef !important;
+        box-shadow: 0 20px 45px rgba(15, 23, 42, 0.06) !important;
+    }
+    .rm-table-container {
+        border-radius: 16px !important;
+        border: 1px solid #dbe4ef !important;
+        box-shadow: 0 20px 45px rgba(15, 23, 42, 0.05) !important;
+        overflow: hidden !important;
+    }
+    .rm-table th,
+    .rm-table td {
+        padding: 16px 18px !important;
+        border-bottom: 1px solid #edf2f7 !important;
+    }
+    .rm-table th {
+        background: #f8fafc !important;
+        color: #475569 !important;
+    }
+    .rm-table tbody tr:hover td {
+        background: #fcfdff !important;
+    }
+    .btn-toggle-add,
+    .btn-edit,
+    .btn-delete,
+    .btn-receipt,
+    .btn-submit,
+    .btn-close-modal,
+    .btn-close-modal:hover {
+        border-radius: 12px !important;
+    }
+    .btn-toggle-add,
+    .btn-submit {
+        background: linear-gradient(180deg, #3b82f6 0%, #2563eb 100%) !important;
+        box-shadow: 0 12px 24px rgba(59, 130, 246, 0.18) !important;
+    }
+    .btn-edit,
+    .btn-receipt {
+        background: #ffffff !important;
+        border: 1px solid #dbe4ef !important;
+        box-shadow: 0 6px 16px rgba(15, 23, 42, 0.04) !important;
+    }
+    .btn-delete {
+        background: linear-gradient(180deg, #ef4444 0%, #dc2626 100%) !important;
+        box-shadow: 0 12px 24px rgba(239, 68, 68, 0.18) !important;
+    }
+    .btn-toggle-add:hover,
+    .btn-edit:hover,
+    .btn-delete:hover,
+    .btn-receipt:hover,
+    .btn-submit:hover {
+        transform: translateY(-1px) !important;
+    }
+    .rm-filter-input,
+    .rm-input,
+    .rm-select {
+        border-radius: 12px !important;
+        border-color: #dbe4ef !important;
+        background: #fff !important;
+    }
+    .page-link {
+        border-radius: 10px !important;
+        border: 1px solid #dbe4ef !important;
+        background: #fff !important;
+        box-shadow: 0 6px 16px rgba(15, 23, 42, 0.04) !important;
+    }
+</style>
 
 <div class="rm-container">
     
@@ -182,6 +484,16 @@ render_page_start('مدیریت حواله‌ها', 'remittances');
     </div>
 
     <div class="rm-panel">
+        <div class="actions rm-filter-shell" style="display:flex; align-items:center; gap:15px; flex-wrap:wrap; margin-bottom:1.5rem; overflow:visible !important;">
+            <form method="get" class="actions" style="display:flex; align-items:center; gap:15px; flex-wrap:wrap; margin:0; overflow:visible !important;">
+                <input type="hidden" name="page" value="1">
+                <input type="text" class="rm-filter-input js-persian-date" name="start_date" value="<?= e($startDate) ?>" placeholder="از تاریخ..." aria-label="از تاریخ" style="width:200px; max-width:200px;">
+                <input type="text" class="rm-filter-input js-persian-date" name="end_date" value="<?= e($endDate) ?>" placeholder="تا تاریخ..." aria-label="تا تاریخ" style="width:200px; max-width:200px;">
+                <button type="submit" class="btn-submit" style="height: 36px;">فیلتر تاریخ</button>
+            </form>
+            <a class="btn btn-light" style="color:#2563eb;border-color:#bfdbfe; text-decoration:none; display:inline-flex; align-items:center; height:36px;" href="remittances.php?<?= e(http_build_query(array_merge($_GET, ['export' => 'excel']))) ?>">خروجی Excel</a>
+            <a class="btn btn-light" style="color:#7c3aed;border-color:#ddd6fe; text-decoration:none; display:inline-flex; align-items:center; height:36px;" href="remittances.php?<?= e(http_build_query(array_merge($_GET, ['export' => 'print']))) ?>">خروجی PDF</a>
+        </div>
         <div class="rm-table-container">
             <table class="rm-table" id="remittancesTable">
                 <thead>
@@ -224,15 +536,29 @@ render_page_start('مدیریت حواله‌ها', 'remittances');
                                 <td><strong><?= number_format((float)$row['amount_toman']) ?></strong></td>
                                 <td><strong><?= number_format((float)$row['amount_afghani']) ?></strong></td>
                                 <td>
-                                    <span class="rm-badge <?= rm_status_class((string)$row['status']) ?>">
-                                        <?= e(status_fa((string)$row['status'])) ?>
-                                    </span>
+                                    <form method="post" class="rm-status-form">
+                                        <input type="hidden" name="csrf_token" value="<?= e($csrf) ?>">
+                                        <input type="hidden" name="action" value="update">
+                                        <input type="hidden" name="id" value="<?= e((string)$row['id']) ?>">
+                                        <input type="hidden" name="mobile" value="<?= e((string)($row['mobile'] ?? '')) ?>">
+                                        <input type="hidden" name="agency" value="<?= e((string)$row['agency']) ?>">
+                                        <input type="hidden" name="sender" value="<?= e((string)$row['sender']) ?>">
+                                        <input type="hidden" name="receiver" value="<?= e((string)$row['receiver']) ?>">
+                                        <input type="hidden" name="amount_toman" value="<?= e((string)$row['amount_toman']) ?>">
+                                        <input type="hidden" name="amount_afghani" value="<?= e((string)$row['amount_afghani']) ?>">
+                                        <select name="status" class="rm-status-select">
+                                            <option value="pending" <?= (string)$row['status'] === 'pending' ? 'selected' : '' ?>>انتظار</option>
+                                            <option value="approved" <?= (string)$row['status'] === 'approved' ? 'selected' : '' ?>>تایید</option>
+                                            <option value="rejected" <?= (string)$row['status'] === 'rejected' ? 'selected' : '' ?>>رد</option>
+                                        </select>
+                                        <button type="submit" class="rm-status-save">ذخیره</button>
+                                    </form>
                                 </td>
                                 <td dir="ltr" style="text-align: right;"><?= e(to_jalali_datetime((string)$row['created_at'])) ?></td>
-                                <td>
-                                    <div class="rm-actions">
+                                <td class="text-nowrap" style="white-space: nowrap;">
+                                    <div class="d-flex flex-row justify-content-center align-items-center" style="gap: 8px; flex-wrap: nowrap;">
                                         <?php if (can('edit')): ?>
-                                            <button class="btn-edit" 
+                                            <button class="btn-edit btn-sm" 
                                                     data-id="<?= e((string)$row['id']) ?>" 
                                                     data-mobile="<?= e((string)$row['mobile']) ?>" 
                                                     data-agency="<?= e($row['agency']) ?>"
@@ -243,13 +569,14 @@ render_page_start('مدیریت حواله‌ها', 'remittances');
                                                     data-status="<?= e($row['status']) ?>" 
                                                     onclick="prepareEditModal(this)">ویرایش</button>
                                         <?php endif; ?>
+                                        <a class="btn-receipt btn-sm" href="view_receipt.php?id=<?= e((string)$row['id']) ?>" target="_blank" rel="noopener" title="نمایش رسید">نمایش رسید</a>
                                         
                                         <?php if (can('delete')): ?>
-                                            <form method="post" style="margin:0;" onsubmit="return confirm('آیا از حذف این حواله اطمینان دارید؟');">
+                                            <form method="post" class="m-0 p-0" style="display: inline-block; margin:0;" onsubmit="return confirm('آیا از حذف این حواله اطمینان دارید؟');">
                                                 <input type="hidden" name="csrf_token" value="<?= e($csrf) ?>">
                                                 <input type="hidden" name="action" value="delete">
                                                 <input type="hidden" name="id" value="<?= e((string)$row['id']) ?>">
-                                                <button class="btn-delete" type="submit">حذف</button>
+                                                <button class="btn-delete btn-sm" type="submit">حذف</button>
                                             </form>
                                         <?php endif; ?>
                                     </div>
@@ -264,7 +591,7 @@ render_page_start('مدیریت حواله‌ها', 'remittances');
         <?php if ($totalPages > 1): ?>
             <div class="rm-pagination">
                 <?php for ($i = 1; $i <= $totalPages; $i++): ?>
-                    <a class="page-link <?= $i === $page ? 'active' : '' ?>" href="remittances.php?page=<?= $i ?>"><?= $i ?></a>
+                    <a class="page-link <?= $i === $page ? 'active' : '' ?>" href="remittances.php?<?= e(http_build_query(array_merge($_GET, ['page' => $i]))) ?>"><?= $i ?></a>
                 <?php endfor; ?>
             </div>
         <?php endif; ?>
@@ -485,7 +812,7 @@ render_page_start('مدیریت حواله‌ها', 'remittances');
     (function () {
         const table = document.getElementById('remittancesTable');
         if (!table) return;
-        const filters = table.querySelectorAll('.filter-row input');
+        const filters = table.querySelectorAll('.filter-row input[data-col]');
         const rows = Array.from(table.querySelectorAll('tbody tr:not(.filter-row)'));
         
         function applyFilters() {
