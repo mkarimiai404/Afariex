@@ -12,19 +12,20 @@ import {
 } from 'react-native';
 import { useRouter, Stack } from 'expo-router'; // Stack اضافه شد
 
-import { fetchJson } from '@/lib/api';
+import { fetchJson, isApiResponseError } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { showError } from '@/lib/toast';
 
 export default function LoginScreen() {
   const router = useRouter();
-  const { signIn } = useAuth();
+  const { signIn, signOut } = useAuth();
   const [mobile, setMobile] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
 
    const handleLogin = async () => {
+    if (loading) return;
     if (!mobile || !password) {
       showError('خطا', 'لطفاً شماره موبایل و رمز عبور را وارد کنید.');
       return;
@@ -33,6 +34,7 @@ export default function LoginScreen() {
     setLoading(true);
 
     try {
+      await signOut();
       // استفاده از FormData برای سازگاری کامل با سرورهای PHP
       const formData = new FormData();
       formData.append('mobile', mobile);
@@ -47,11 +49,12 @@ export default function LoginScreen() {
         body: formData,
       });
 
-      if (data.status === 'success') {
+      const loginToken = typeof data?.data?.api_token === 'string' ? data.data.api_token.trim() : '';
+      if (data?.status === 'success' && loginToken) {
         const fullName = data.data.full_name || data.data.name;
-        const userId = data.data.id || data.data.user_id; 
+        const userId = data.data.id || data.data.user_id;
         signIn({
-          userToken: data.data.api_token ? String(data.data.api_token) : null,
+          userToken: loginToken,
           userMobile: data.data.mobile ? String(data.data.mobile) : null,
           userName: fullName ? String(fullName) : null,
           userId: userId ? String(userId) : null,
@@ -62,12 +65,11 @@ export default function LoginScreen() {
         showError('خطا در ورود', data.message || 'شماره موبایل یا رمز عبور اشتباه است.');
       }
     } catch (error) {
-      console.error('Login Error:', error);
-      if (error instanceof Error) {
-        console.log('[Login] error message:', error.message);
-        console.log('[Login] error cause:', error.cause);
+      if (isApiResponseError(error) && error.safeMessage) {
+        showError('خطا در ورود', error.safeMessage);
+      } else {
+        showError('خطای ارتباط', 'خطا در ارتباط با سرور. لطفاً اتصال اینترنت خود را بررسی کنید.');
       }
-      showError('خطای ارتباط', 'خطا در ارتباط با سرور. لطفاً اتصال اینترنت خود را بررسی کنید.');
     } finally {
       setLoading(false);
     }

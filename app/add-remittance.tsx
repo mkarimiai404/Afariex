@@ -1,11 +1,11 @@
-import { Ionicons } from '@expo/vector-icons';
+﻿import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Picker } from '@react-native-picker/picker';
 import * as Print from 'expo-print';
 import { Stack, useRouter } from 'expo-router';
 import * as Sharing from 'expo-sharing';
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -24,8 +24,6 @@ import { useAuth } from '@/lib/auth-context';
 import { apiUrl } from '@/lib/api';
 import { showError, showSuccess } from '@/lib/toast';
 import { AppBottomNav } from '@/components/app-bottom-nav';
-
-const API_BASE_URL = 'https://afariex.ir/API';
 
 type Agency = {
   id: string | number;
@@ -50,6 +48,18 @@ const toPersianCommaNumber = (value: number | string) => {
   return toPersianNum(numericValue.toLocaleString('en-US'));
 };
 
+const normalizeAmountInput = (value: string) => {
+  const normalizedDigits = value
+    .replace(/[۰-۹]/g, (digit) => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(digit)))
+    .replace(/[٠-٩]/g, (digit) => String('٠١٢٣٤٥٦٧٨٩'.indexOf(digit)))
+    .replace(/[٬,\s]/g, '');
+
+  const [integerPart, ...fractionParts] = normalizedDigits.split('.');
+  return fractionParts.length > 0
+    ? `${integerPart}.${fractionParts.join('').replace(/\D/g, '')}`
+    : integerPart.replace(/\D/g, '');
+};
+
 const getJalaliDate = () => {
   try {
     return new Intl.DateTimeFormat('fa-IR-u-ca-persian', {
@@ -64,7 +74,7 @@ const getJalaliDate = () => {
 
 export default function AddRemittanceScreen() {
   const router = useRouter();
-  const { userId, userToken, userName, userMobile, setUserBalance } = useAuth();
+  const { userId, userToken, userName, userMobile, isInitialized, setUserBalance } = useAuth();
 
   const [agencies, setAgencies] = useState<Agency[]>([]);
   const [exchangeRates, setExchangeRates] = useState<ExchangeRate[]>([]);
@@ -82,8 +92,11 @@ export default function AddRemittanceScreen() {
   const [error, setError] = useState<string | null>(null);
   const [resolvedUserId, setResolvedUserId] = useState<string>('');
   const [resolvedApiToken, setResolvedApiToken] = useState<string>('');
+  const loadInFlight = useRef(false);
   
   const [successModalVisible, setSuccessModalVisible] = useState(false);
+  const [insufficientBalanceVisible, setInsufficientBalanceVisible] = useState(false);
+  const [completedRemittanceId, setCompletedRemittanceId] = useState<string | null>(null);
   const [lastTrackingCode, setLastTrackingCode] = useState<string>('');
   const [lastAgencyAddress, setLastAgencyAddress] = useState<string>('');
   const [lastAgencyName, setLastAgencyName] = useState<string>('');
@@ -98,6 +111,10 @@ export default function AddRemittanceScreen() {
     setAmountAfghani('');
     setReceiverName('');
     setReceiverPhone('');
+  };
+
+  const handleAmountChange = (value: string) => {
+    setAmountToman(normalizeAmountInput(value));
   };
 
   useEffect(() => {
@@ -125,9 +142,11 @@ export default function AddRemittanceScreen() {
       }
     };
     resolveAuthPayload();
-  }, [userId, userToken]);
+  }, [isInitialized, userId, userToken]);
 
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
+    if (!isInitialized || loadInFlight.current) return;
+    loadInFlight.current = true;
     setLoading(true);
     setError(null);
     try {
@@ -159,12 +178,13 @@ export default function AddRemittanceScreen() {
       setError('خطا در ارتباط با سرور. لطفاً اینترنت خود را بررسی کنید.');
     } finally {
       setLoading(false);
+      loadInFlight.current = false;
     }
-  };
+  }, [isInitialized]);
 
   useEffect(() => {
-    fetchData();
-  }, []);
+    if (isInitialized) void fetchData();
+  }, [fetchData, isInitialized]);
 
   useEffect(() => {
     if (!amountToman || !selectedRate) {
@@ -225,7 +245,7 @@ export default function AddRemittanceScreen() {
   };
 
   const handleSubmit = async () => {
-    if (submitting) return;
+    if (submitting || completedRemittanceId) return;
 
     const selectedAgency = agencies.find((a) => String(a.id) === String(selectedAgencyId));
     
@@ -238,19 +258,23 @@ export default function AddRemittanceScreen() {
     }
 
     setSubmitting(true);
+    let commitReceived = false;
     try {
       // استفاده از URLSearchParams برای اطمینان 100% از دریافت در بک‌اند
       const payload = new URLSearchParams();
       
       // کلیدهای زیر دقیقاً با فایل بک‌اند همگام شده‌اند
       payload.append('user_id', resolvedUserId);
+      const submissionToken = userToken?.trim() || resolvedApiToken.trim();
+      if (submissionToken) payload.append('api_token', submissionToken);
       payload.append('agency', selectedAgency.name);
-      payload.append('sender', senderName.trim());
-      payload.append('receiver', receiverName.trim());
+      payload.append('sender_name', senderName.trim());
+      payload.append('receiver_name', receiverName.trim());
+      payload.append('receiver_phone', receiverPhone.trim());
       payload.append('amount_toman', amountToman.trim());
-      payload.append('amount_afghani', amountAfghani.trim());
+      payload.append('amount_afn', amountAfghani.trim());
 
-      const response = await fetch(`${API_BASE_URL}/add_remittance.php`, {
+      const response = await fetch(apiUrl('add_remittance.php'), {
         method: 'POST',
         headers: {
           Accept: 'application/json',
@@ -264,12 +288,26 @@ export default function AddRemittanceScreen() {
       try {
         result = responseText ? JSON.parse(responseText) : {};
       } catch {
-        throw new Error('Ù¾Ø§Ø³Ø® Ù†Ø§Ù…Ø¹ØªØ¨Ø± Ø§Ø² Ø³Ø±ÙˆØ±.');
+        showError('خطا', 'پاسخ معتبری از سرور دریافت نشد.');
+        return;
       }
 
       const responseMessage = typeof result?.message === 'string' ? result.message.trim() : '';
       const normalizedStatus = String(result?.status ?? '').toLowerCase();
       const isErrorResponse = normalizedStatus === 'error' || response.status === 403 || !response.ok;
+
+      if (result?.code === 'DAILY_TRANSACTION_LIMIT_EXCEEDED') {
+        showError('سقف تراکنش روزانه', `سقف: ${Number(result?.data?.daily_limit || 0).toLocaleString('en-US')} تومان، باقی‌مانده: ${Number(result?.data?.remaining_today || 0).toLocaleString('en-US')} تومان`);
+        router.push('/access-level' as any);
+        return;
+      }
+
+      const responseCode = String(result?.code ?? result?.data?.code ?? '').trim();
+
+      if (responseCode === 'INSUFFICIENT_BALANCE') {
+        setInsufficientBalanceVisible(true);
+        return;
+      }
 
       if (isErrorResponse) {
         showError('Ø®Ø·Ø§', responseMessage || 'Ø®Ø·Ø§ Ø¯Ø± Ø«Ø¨Øª Ø­ÙˆØ§Ù„Ù‡.');
@@ -277,7 +315,21 @@ export default function AddRemittanceScreen() {
       }
 
       if (result?.status === 'success' || result?.success) {
-        setLastTrackingCode(result?.data?.tracking_number || `TMP-${Date.now().toString().slice(-6)}`);
+        commitReceived = true;
+        const committedRemittanceId = String(
+          result?.data?.remittance_id ??
+          result?.data?.tracking_number ??
+          result?.data?.code ??
+          result?.remittance_id ??
+          result?.tracking_number ??
+          ''
+        ).trim();
+        if (!committedRemittanceId) {
+          showError('خطا', 'حواله ثبت شد، اما شناسه رسید از سرور دریافت نشد.');
+          return;
+        }
+        setCompletedRemittanceId(committedRemittanceId);
+        setLastTrackingCode(committedRemittanceId);
         setLastAgencyAddress(selectedAgency?.address || 'آدرس ثبت نشده');
         setLastAgencyName(selectedAgency?.name || '');
         const newBalance =
@@ -300,7 +352,11 @@ export default function AddRemittanceScreen() {
         showError('خطا', result?.message || 'خطا در ثبت حواله.');
       }
     } catch (err) {
-      showError('خطای ارتباط', 'مشکل در ارتباط با سرور رخ داده است.');
+      if (commitReceived) {
+        showError('رسید حواله', 'حواله با موفقیت ثبت شد، اما نمایش رسید انجام نشد.');
+      } else {
+        showError('خطای ارتباط', 'مشکل در ارتباط با سرور رخ داده است.');
+      }
     } finally {
       setSubmitting(false);
     }
@@ -347,6 +403,7 @@ export default function AddRemittanceScreen() {
               <Text style={styles.label}>نمایندگی مقصد</Text>
               <View style={styles.pickerContainer}>
                 <Picker
+                  style={styles.picker}
                   selectedValue={selectedAgencyId ?? ''}
                   onValueChange={(v) => setSelectedAgencyId(String(v))}>
                   {agencies.map((agency) => (
@@ -376,8 +433,9 @@ export default function AddRemittanceScreen() {
                   <TextInput
                     style={styles.input}
                     keyboardType="numeric"
+                    editable={true}
                     value={amountToman}
-                    onChangeText={setAmountToman}
+                    onChangeText={handleAmountChange}
                     placeholder="مثال: 5000000"
                   />
                 </View>
@@ -427,6 +485,34 @@ export default function AddRemittanceScreen() {
           <AppBottomNav />
         </View>
       </KeyboardAvoidingView>
+
+      <Modal
+        visible={insufficientBalanceVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setInsufficientBalanceVisible(false)}>
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>موجودی ناکافی</Text>
+            <Text style={styles.modalLine}>موجودی کیف پول شما برای ثبت این حواله کافی نیست.</Text>
+            <View style={styles.modalActions}>
+              <TouchableOpacity
+                style={[styles.modalBtn, styles.pdfBtn]}
+                onPress={() => {
+                  setInsufficientBalanceVisible(false);
+                  router.push('/add-balance' as any);
+                }}>
+                <Text style={styles.modalBtnText}>افزایش موجودی کیف پول</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.modalBtn, styles.homeBtn]}
+                onPress={() => setInsufficientBalanceVisible(false)}>
+                <Text style={[styles.modalBtnText, { color: '#374151' }]}>بازگشت</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       {/* مدال موفقیت */}
       <Modal
@@ -510,6 +596,12 @@ const styles = StyleSheet.create({
     backgroundColor: '#f9fafb', 
     overflow: 'hidden' 
   },
+  picker: {
+    height: 50,
+    width: '100%',
+    color: '#333',
+    fontFamily: 'Vazirmatn',
+  },
   readonlyBox: { 
     borderWidth: 1, 
     borderColor: '#e5e7eb', 
@@ -558,4 +650,3 @@ const styles = StyleSheet.create({
   homeBtn: { backgroundColor: '#f3f4f6', borderWidth: 1, borderColor: '#e5e7eb' },
   modalBtnText: { color: '#fff', fontSize: 14, fontWeight: 'bold', fontFamily: 'Vazirmatn' },
 });
-

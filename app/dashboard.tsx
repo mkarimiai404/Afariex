@@ -116,7 +116,13 @@ export default function DashboardScreen() {
           showsVerticalScrollIndicator={false}
         >
           <View style={styles.topHeader}>
-            <View style={styles.userInfo}>
+            <TouchableOpacity
+              style={styles.userInfo}
+              onPress={() => router.push('/profile' as any)}
+              activeOpacity={0.8}
+              accessibilityRole="button"
+              accessibilityLabel="پروفایل کاربر"
+            >
               <View style={styles.avatar}>
                 <Ionicons name="person" size={22} color="#0ed874" />
               </View>
@@ -124,7 +130,7 @@ export default function DashboardScreen() {
                 <Text style={styles.welcomeSub}>سلام، خوش آمدید</Text>
                 <Text style={styles.welcomeName}>{userName || 'کاربر گرامی'}</Text>
               </View>
-            </View>
+            </TouchableOpacity>
 
             <TouchableOpacity style={styles.notificationBtn} onPress={() => router.push('/notifications' as any)}>
               <Ionicons name="notifications-outline" size={20} color="#4b5563" />
@@ -184,6 +190,13 @@ export default function DashboardScreen() {
                   <Ionicons name="headset" size={24} color="#0ea5e9" />
                 </View>
                 <Text style={styles.serviceText}>پشتیبانی</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity style={styles.serviceItem} onPress={() => router.push('/withdraw' as any)}>
+                <View style={[styles.iconWrapper, { backgroundColor: '#fff7ed' }]}>
+                  <Ionicons name="arrow-down-circle" size={24} color="#ea580c" />
+                </View>
+                <Text style={styles.serviceText}>برداشت وجه</Text>
               </TouchableOpacity>
             </View>
           </View>

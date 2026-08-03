@@ -2,14 +2,51 @@ import { Platform } from 'react-native';
 
 type JsonValue = Record<string, any> | any[];
 
+const LOCAL_BASE_URL = 'http://localhost/afariex/API/';
 const PROD_BASE_URL = 'https://afariex.ir/API/';
 const TIMEOUT_MS = 12000;
 const MAX_ATTEMPTS = 1;
+let authExpiryHandler: (() => void | Promise<void>) | null = null;
+
+export const registerAuthExpiryHandler = (handler: () => void | Promise<void>) => {
+  authExpiryHandler = handler;
+  return () => { if (authExpiryHandler === handler) authExpiryHandler = null; };
+};
+
+export class ApiResponseError extends Error {
+  status: number;
+  responseCode: string;
+  safeMessage: string;
+  responseData: JsonValue | null;
+  isNetworkError = false;
+
+  constructor(
+    status: number,
+    message: string,
+    responseCode = 'unknown',
+    safeMessage = '',
+    responseData: JsonValue | null = null
+  ) {
+    super(message);
+    this.name = 'ApiResponseError';
+    this.status = status;
+    this.responseCode = responseCode;
+    this.safeMessage = safeMessage;
+    this.responseData = responseData;
+  }
+}
 
 const normalizeBase = (url: string) => `${url.replace(/\/+$/, '')}/`;
 
 const getBaseCandidates = () => {
   const envBase = process.env.EXPO_PUBLIC_API_BASE_URL?.trim();
+
+  // Expo Web defaults to XAMPP locally, but an explicit public API base can
+  // intentionally target another environment without changing source code.
+  if (__DEV__ && Platform.OS === 'web') {
+    return [normalizeBase(envBase || LOCAL_BASE_URL)];
+  }
+
   if (envBase) {
     return [normalizeBase(envBase)];
   }
@@ -49,9 +86,14 @@ const getErrorDetails = (error: unknown) => {
 const toNetworkError = (endpoint: string, finalUrl: string, error: unknown) => {
   const details = getErrorDetails(error);
   const wrappedError = new Error(`Request failed for ${endpoint} at ${finalUrl}: ${details.message}`);
+  wrappedError.name = 'ApiNetworkError';
+  (wrappedError as Error & { isNetworkError?: boolean }).isNetworkError = true;
   (wrappedError as Error & { cause?: unknown }).cause = details.cause ?? error;
   return wrappedError;
 };
+
+export const isApiResponseError = (error: unknown): error is ApiResponseError =>
+  error instanceof ApiResponseError;
 
 export const getApiBaseUrl = () => getBaseCandidates()[0];
 
@@ -72,53 +114,65 @@ export const fetchJson = async <T = JsonValue>(
     for (const url of urls) {
       try {
         const method = (init?.method || 'GET').toUpperCase();
-        console.log(`[API] request attempt=${attempt} method=${method} url=${url}`);
+        if (__DEV__) console.log(`[API] request attempt=${attempt} method=${method} url=${url}`);
         const response = await withTimeout(url, init);
         const text = (await response.text()).trim();
-        console.log(`[API] response status=${response.status} method=${method} url=${url}`);
-        console.log(`[API] response preview (${normalizedEndpoint}): ${text.slice(0, 300)}`);
-
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}: ${text.slice(0, 180) || 'Empty response'}`);
-        }
+        let responseCode = 'unknown';
+        let parsedResponse: JsonValue | null = null;
+        try {
+          parsedResponse = JSON.parse(text) as JsonValue;
+          const parsed = parsedResponse as { code?: unknown; data?: { code?: unknown } };
+          const parsedCode = parsed?.code ?? parsed?.data?.code;
+          responseCode = typeof parsedCode === 'string' ? parsedCode : 'none';
+        } catch { /* handled below */ }
+        if (__DEV__) console.log(`[API] response status=${response.status} code=${responseCode} method=${method} url=${url}`);
 
         if (text.startsWith('<')) {
           throw new Error('HTML response received instead of JSON.');
         }
 
+        if (!response.ok) {
+          if (response.status === 401 || responseCode === 'AUTHENTICATION_REQUIRED' || responseCode === 'AUTHENTICATION_FAILED') {
+            void authExpiryHandler?.();
+          }
+          const responseObject = parsedResponse && !Array.isArray(parsedResponse)
+            ? parsedResponse as Record<string, unknown>
+            : null;
+          const safeMessage = typeof responseObject?.message === 'string'
+            ? responseObject.message.trim()
+            : '';
+          throw new ApiResponseError(
+            response.status,
+            safeMessage || `HTTP ${response.status}`,
+            responseCode,
+            safeMessage,
+            parsedResponse
+          );
+        }
+
         try {
-          return JSON.parse(text) as T;
+          return (parsedResponse ?? JSON.parse(text)) as T;
         } catch {
-          throw new Error(`Invalid JSON response: ${text.slice(0, 180) || 'Empty response'}`);
+          throw new Error('Invalid JSON response');
         }
       } catch (error) {
         const details = getErrorDetails(error);
         const method = (init?.method || 'GET').toUpperCase();
-        console.log('[API] full error object', error);
-        console.log('[API] error.message', details.message);
-        console.log('[API] error.name', details.name);
-        console.log('[API] error.cause', details.cause);
-        console.log('[API] error details', {
-          endpoint: normalizedEndpoint,
-          url,
-          method,
-          requestHeaders: init?.headers || null,
-          hasBody: Boolean(init?.body),
-          message: details.message,
-          cause: details.cause,
-          name: details.name,
-          timeoutMs: TIMEOUT_MS,
-        });
-        const maybeAxiosError = error as {
-          response?: unknown;
-          request?: unknown;
-          config?: unknown;
-        };
-        console.log('[API] error.response', maybeAxiosError?.response ?? null);
-        console.log('[API] error.request', maybeAxiosError?.request ?? null);
-        console.log('[API] error.config', maybeAxiosError?.config ?? null);
-        console.warn(`[API] failed endpoint=${normalizedEndpoint} url=${url}`, error);
-        lastError = toNetworkError(normalizedEndpoint, url, error);
+        if (__DEV__) {
+          console.log('[API] error details', {
+            endpoint: normalizedEndpoint,
+            url,
+            method,
+            tokenPresent: typeof init?.body === 'string' && init.body.includes('api_token='),
+            message: details.message,
+            name: details.name,
+            timeoutMs: TIMEOUT_MS,
+          });
+          console.warn(`[API] failed endpoint=${normalizedEndpoint} url=${url} status=${(error as ApiResponseError).status || 'unknown'} code=${(error as ApiResponseError).responseCode || 'unknown'}`);
+        }
+        lastError = isApiResponseError(error)
+          ? error
+          : toNetworkError(normalizedEndpoint, url, error);
       }
     }
   }

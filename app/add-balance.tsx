@@ -7,12 +7,10 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { Linking, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { fetchJson } from '@/lib/api';
+import { apiUrl, fetchJson } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { showError, showSuccess } from '@/lib/toast';
 import { AppBottomNav } from '@/components/app-bottom-nav';
-
-const API_BASE_URL = 'https://afariex.ir/API';
 
 // تابع تبدیل اعداد به فارسی
 const toPersianNum = (num: string | number) => {
@@ -154,7 +152,7 @@ export default function AddBalanceScreen() {
         } as any);
       }
 
-      const response = await fetch(`${API_BASE_URL}/add-balance.php`, {
+      const response = await fetch(apiUrl('add-balance.php'), {
         method: 'POST',
         body: formData, // بدون قرار دادن هدر Content-Type
       });

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   RefreshControl,
@@ -13,9 +13,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { useAuth } from '@/lib/auth-context';
+import { fetchJson, isApiResponseError } from '@/lib/api';
 import { AppBottomNav } from '@/components/app-bottom-nav';
-
-const API_URL = 'https://afariex.ir/API/transactions-history.php';
 
 type TransactionType = 'deposit' | 'withdraw' | 'remittance' | string;
 type FilterType = 'all' | 'deposit' | 'withdraw' | 'remittance';
@@ -45,7 +44,13 @@ const normalizeTransaction = (item: any): TransactionItem => ({
   source: toSafeString(item?.source),
   amount: toSafeString(item?.amount),
   tracking_code: toSafeString(item?.tracking_code),
-  type: toSafeString(item?.type),
+  type: (() => {
+    const type = toSafeString(item?.type).toLowerCase();
+    if (type === 'withdraw' || type === 'withdrawal') return 'withdraw';
+    if (type === 'deposit') return 'deposit';
+    if (type === 'remittance' || type === 'transfer') return 'remittance';
+    return type;
+  })(),
   status: toSafeString(item?.status),
   receipt_image: toSafeString(item?.receipt_image),
   created_at: toSafeString(item?.created_at),
@@ -126,15 +131,19 @@ const getStatusMeta = (status: string) => {
 
 export default function TransactionsHistoryScreen() {
   const router = useRouter();
-  const { userId, userToken, isAuthenticated } = useAuth();
+  const { userToken, isAuthenticated, isInitialized } = useAuth();
 
   const [filter, setFilter] = useState<FilterType>('all');
   const [transactions, setTransactions] = useState<TransactionItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [errorText, setErrorText] = useState('');
+  const requestInFlight = useRef(false);
 
   const fetchTransactions = useCallback(async () => {
+    if (requestInFlight.current || !isInitialized) return;
+    requestInFlight.current = true;
+    setLoading(true);
     try {
       setErrorText('');
 
@@ -153,33 +162,13 @@ export default function TransactionsHistoryScreen() {
       const body = new URLSearchParams();
       body.append('api_token', String(userToken));
 
-      if (userId !== null && userId !== undefined) {
-        body.append('user_id', String(userId));
-      }
-
-      const response = await fetch(API_URL, {
+      const data = await fetchJson<any>('transactions-history.php', {
         method: 'POST',
         headers: {
-          Accept: 'application/json',
           'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
         },
         body: body.toString(),
       });
-
-      const rawText = await response.text();
-
-      let data: any = null;
-
-      try {
-        data = JSON.parse(rawText);
-      } catch (jsonError) {
-        console.log('API RAW RESPONSE:', rawText);
-        setTransactions([]);
-        setErrorText('پاسخ API قابل خواندن نیست. احتمالاً خطای PHP یا HTML برگشته است.');
-        return;
-      }
-
-      console.log('TRANSACTIONS API RESPONSE:', data);
 
       if (data?.status === 'success') {
         const list = Array.isArray(data.data) ? data.data.map(normalizeTransaction) : [];
@@ -188,24 +177,29 @@ export default function TransactionsHistoryScreen() {
       }
 
       setTransactions([]);
-      setErrorText(data?.message || 'خطای نامشخص در دریافت تراکنش‌ها.');
+      setErrorText('دریافت تاریخچه تراکنشها ممکن نشد.');
     } catch (error) {
-      console.log('TRANSACTIONS FETCH ERROR:', error);
       setTransactions([]);
-      setErrorText('ارتباط با سرور برقرار نشد.');
+      setErrorText(
+        isApiResponseError(error) && error.safeMessage
+          ? error.safeMessage
+          : 'دریافت تاریخچه تراکنشها ممکن نشد.'
+      );
     } finally {
       setLoading(false);
       setRefreshing(false);
+      requestInFlight.current = false;
     }
-  }, [isAuthenticated, userId, userToken]);
+  }, [isAuthenticated, isInitialized, userToken]);
 
   useEffect(() => {
-    fetchTransactions();
-  }, [fetchTransactions]);
+    if (isInitialized) void fetchTransactions();
+  }, [fetchTransactions, isInitialized]);
 
   const onRefresh = () => {
+    if (requestInFlight.current) return;
     setRefreshing(true);
-    fetchTransactions();
+    void fetchTransactions();
   };
 
   const filteredTransactions = transactions.filter((tx) => {

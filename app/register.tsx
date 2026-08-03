@@ -1,202 +1,223 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView, KeyboardAvoidingView, Platform, ActivityIndicator } from 'react-native';
-import { Link, useRouter } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import React, { useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, Image, KeyboardAvoidingView, Platform, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+import * as Clipboard from 'expo-clipboard';
+import { Stack, useRouter } from 'expo-router';
 
 import { fetchJson } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
-import { showError, showSuccess } from '@/lib/toast';
+
+type RegisterStep = 'form' | 'otp' | 'success';
+
+const passwordOk = (value: string) => value.length >= 8 && /[a-z]/.test(value) && /[A-Z]/.test(value) && /\d/.test(value);
+const codeMessage: Record<string, string> = {
+  INVALID_MOBILE: 'شماره موبایل معتبر وارد کنید.',
+  MOBILE_ALREADY_REGISTERED: 'این شماره موبایل قبلاً ثبت شده است.',
+  INVALID_REGISTRATION_DATA: 'اطلاعات ثبت‌نام معتبر نیست.',
+  INVALID_REFERRAL_CODE: 'کد معرف معتبر نیست.',
+  OTP_COOLDOWN: 'لطفاً برای ارسال مجدد کمی صبر کنید.',
+  OTP_RATE_LIMITED: 'تعداد درخواست‌ها بیش از حد مجاز است.',
+  OTP_DAILY_LIMITED: 'تعداد درخواست‌های امروز بیش از حد مجاز است.',
+  INVALID_OTP: 'کد تأیید واردشده صحیح نیست.',
+  OTP_EXPIRED: 'کد تأیید منقضی شده است.',
+  OTP_ATTEMPTS_EXCEEDED: 'تعداد تلاش‌ها بیش از حد مجاز است.',
+  REGISTRATION_OTP_REQUIRED: 'ابتدا کد تأیید شماره موبایل را وارد کنید.',
+  REGISTRATION_OTP_INVALID: 'تأیید ثبت‌نام معتبر نیست.',
+  OTP_SEND_FAILED: 'ارسال کد تأیید در حال حاضر امکان‌پذیر نیست.',
+  PIN_SYSTEM_UNAVAILABLE: 'ساخت حساب در حال حاضر امکان‌پذیر نیست.',
+};
+
+const normalizeDigits = (value: string) => value.replace(/[۰-۹]/g, (digit) => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(digit)));
+
+function normalizeIranMobile(value: string): string | null {
+  let normalized = normalizeDigits(value).trim().replace(/[\s().-]+/g, '');
+  if (normalized.startsWith('+98')) normalized = `0${normalized.slice(3)}`;
+  else if (normalized.startsWith('98')) normalized = `0${normalized.slice(2)}`;
+  return /^09\d{9}$/.test(normalized) ? normalized : null;
+}
+
+function maskMobile(mobile: string): string {
+  return mobile.length === 11 ? `${mobile.slice(0, 3)}******${mobile.slice(-2)}` : '***********';
+}
+
+function readResponseCode(error: unknown): string {
+  return typeof error === 'object' && error !== null && 'responseCode' in error ? String((error as { responseCode?: string }).responseCode || '') : '';
+}
 
 export default function RegisterScreen() {
-  const router = useRouter(); 
+  const router = useRouter();
   const { signIn } = useAuth();
-
+  const otpInput = useRef<TextInput>(null);
+  const [step, setStep] = useState<RegisterStep>('form');
   const [fullName, setFullName] = useState('');
   const [mobile, setMobile] = useState('');
-  const [pin, setPin] = useState('');
+  const [referralCode, setReferralCode] = useState('');
   const [password, setPassword] = useState('');
+  const [otp, setOtp] = useState('');
+  const [generatedPin, setGeneratedPin] = useState<string | null>(null);
+  const [pinCopied, setPinCopied] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [cooldown, setCooldown] = useState(0);
+  const [error, setError] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const [passwordStrength, setPasswordStrength] = useState(0);
-  const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    const generatedPin = Math.floor(10000 + Math.random() * 90000).toString();
-    setPin(generatedPin);
-  }, []);
+    if (step !== 'otp' || cooldown <= 0) return undefined;
+    const timer = setInterval(() => setCooldown((current) => Math.max(0, current - 1)), 1000);
+    return () => clearInterval(timer);
+  }, [step, cooldown]);
 
-  const handlePasswordChange = (val: string) => {
-    setPassword(val);
-    let strength = 0;
-    if (val.length >= 8) strength++;
-    if (val.match(/[a-z]/) && val.match(/[A-Z]/)) strength++;
-    if (val.match(/[0-9]/)) strength++;
-    setPasswordStrength(strength);
+  useEffect(() => {
+    if (step !== 'otp') return undefined;
+    const focusTimer = setTimeout(() => otpInput.current?.focus(), 120);
+    return () => clearTimeout(focusTimer);
+  }, [step]);
+
+  const validateForm = (): string | null => {
+    if (!fullName.trim()) return 'نام و نام خانوادگی را وارد کنید.';
+    if (!normalizeIranMobile(mobile)) return 'شماره موبایل معتبر وارد کنید.';
+    if (!password) return 'رمز عبور را وارد کنید.';
+    if (!passwordOk(password)) return 'رمز عبور باید حداقل ۸ کاراکتر و شامل حروف بزرگ، حروف کوچک و عدد باشد.';
+    return null;
   };
 
-  const getStrengthColor = () => {
-    if (passwordStrength === 1) return '#e74c3c';
-    if (passwordStrength === 2) return '#f39c12';
-    if (passwordStrength === 3) return '#2ecc71';
-    return 'transparent';
-  };
-
-  // اتصال به API ثبت‌نام با دامنه جدید
-  const handleRegister = async () => {
-    if (loading) return;
-
-    if (!fullName || !mobile || !pin || !password) {
-      showError('خطا', 'لطفاً تمام فیلدها را پر کنید.');
+  const requestOtp = async () => {
+    if (busy || cooldown > 0) return;
+    const validationError = validateForm();
+    const normalizedMobile = normalizeIranMobile(mobile);
+    if (validationError || !normalizedMobile) {
+      setError(validationError || 'شماره موبایل معتبر وارد کنید.');
       return;
     }
-
-    setLoading(true);
-
+    setError('');
+    setBusy(true);
     try {
-      const nameParts = fullName.trim().split(/\s+/).filter(Boolean);
-      const firstName = nameParts[0] || '';
-      const lastName = nameParts.slice(1).join(' ');
-
-      const data = await fetchJson<any>('register.php', {
+      const response = await fetchJson<any>('auth/request-otp.php', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mobile: normalizedMobile, purpose: 'registration' }),
+      });
+      setMobile(normalizedMobile);
+      setOtp('');
+      setCooldown(Number(response?.data?.resend_after || 60));
+      setStep('otp');
+    } catch (requestError) {
+      const responseCode = readResponseCode(requestError);
+      setError(codeMessage[responseCode] || 'ارسال کد تأیید در حال حاضر امکان‌پذیر نیست.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const completeRegistration = async () => {
+    if (busy) return;
+    const normalizedOtp = normalizeDigits(otp);
+    if (!/^\d{6}$/.test(normalizedOtp)) {
+      setError('کد تأیید ۶ رقمی را وارد کنید.');
+      return;
+    }
+    const normalizedMobile = normalizeIranMobile(mobile);
+    if (!normalizedMobile) {
+      setError('شماره موبایل معتبر وارد کنید.');
+      return;
+    }
+    setError('');
+    setBusy(true);
+    try {
+      const verified = await fetchJson<any>('auth/verify-otp.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mobile: normalizedMobile, purpose: 'registration', otp: normalizedOtp }),
+      });
+      const registrationToken = String(verified?.data?.verification_token || '');
+      if (!registrationToken) throw new Error('registration verification unavailable');
+
+      const nameParts = fullName.trim().split(/\s+/);
+      const registration = await fetchJson<any>('register.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          full_name: fullName,
-          first_name: firstName,
-          last_name: lastName,
-          pin_code: pin,
-          mobile,
-          pin,
+          full_name: fullName.trim(),
+          first_name: nameParts[0] || '',
+          last_name: nameParts.slice(1).join(' '),
+          mobile: normalizedMobile,
           password,
+          ...(referralCode.trim() ? { referral_code: referralCode.trim() } : {}),
+          registration_token: registrationToken,
         }),
       });
+      const token = String(registration?.data?.api_token || '').trim();
+      const returnedPin = String(registration?.data?.pin || '');
+      if (!token || !/^\d{4}$/.test(returnedPin)) throw new Error('registration session unavailable');
 
-      const normalizedStatus = String(data?.status ?? '').toLowerCase();
-      const isSuccess = data?.success === true || normalizedStatus === 'true' || normalizedStatus === 'success' || normalizedStatus === '1';
-
-      if (isSuccess) {
-        const userId = data.data?.id || data.data?.user_id;
-        signIn({
-          userToken: data.data?.api_token ? String(data.data.api_token) : null,
-          userId: userId ? String(userId) : null,
-          userName: fullName ? String(fullName) : null,
-          userMobile: mobile ? String(mobile) : null,
-        });
-        showSuccess('ثبت نام موفق', 'اکنون وارد حساب خود شوید.');
-        router.replace('/login');
-      } else {
-        showError('خطا در ثبت نام', data.message || 'مشکلی پیش آمده است. لطفاً مجدداً تلاش کنید.');
-      }
-    } catch (error) {
-      console.log('[Register] full error object', error);
-      console.log('[Register] error details', {
-        message: error instanceof Error ? error.message : String(error),
-        cause: error instanceof Error ? error.cause : undefined,
+      signIn({
+        userToken: token,
+        userMobile: normalizedMobile,
+        userName: String(registration?.data?.full_name || fullName.trim()),
+        userId: registration?.data?.id ? String(registration.data.id) : null,
       });
-      if (error instanceof Error) {
-        console.log('[Register] error message:', error.message);
-        console.log('[Register] error cause:', error.cause);
-      }
-      showError('خطای ارتباط', 'خطا در برقراری ارتباط با سرور.');
+      setPassword('');
+      setOtp('');
+      setGeneratedPin(returnedPin);
+      setStep('success');
+    } catch (registrationError) {
+      const responseCode = readResponseCode(registrationError);
+      setError(codeMessage[responseCode] || 'ثبت‌نام انجام نشد. اطلاعات واردشده را بررسی کنید.');
     } finally {
-      setLoading(false);
+      setBusy(false);
     }
+  };
+
+  const copyPin = async () => {
+    if (!generatedPin) return;
+    await Clipboard.setStringAsync(generatedPin);
+    setPinCopied(true);
+  };
+
+  const enterDashboard = () => {
+    setGeneratedPin(null);
+    setPinCopied(false);
+    router.replace('/dashboard');
   };
 
   return (
-    <SafeAreaView style={styles.container}>
-      <KeyboardAvoidingView 
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        style={{ flex: 1 }}
-      >
-        <ScrollView 
-          contentContainerStyle={styles.pageWrapper}
-          keyboardShouldPersistTaps="handled"
-        >
-          <View style={styles.card}>
-            <View style={styles.header}>
-              <Text style={styles.title}>ثبت نام</Text>
-              <Text style={styles.subtitle}>برای ساخت حساب کاربری، اطلاعات زیر را وارد کنید.</Text>
+    <SafeAreaView style={styles.safe}>
+      <Stack.Screen options={{ headerShown: false }} />
+      <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <ScrollView contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled">
+          <View style={styles.shell}>
+            <View style={styles.brandRow}>
+              <Image source={require('../assets/images/logo.png')} style={styles.logo} resizeMode="contain" />
+              <View style={styles.brandText}><Text style={styles.brandName}>آفاریکس</Text><Text style={styles.brandCaption}>امن، ساده، حرفه‌ای</Text></View>
             </View>
-
-            <View style={styles.inputWrapper}>
-              <Text style={styles.label}>نام و نام خانوادگی</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="مثلاً: علی محمدی"
-                value={fullName}
-                onChangeText={setFullName}
-                textAlign="right"
-              />
-            </View>
-
-            <View style={styles.inputWrapper}>
-              <Text style={styles.label}>شماره موبایل</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="09123456789"
-                keyboardType="phone-pad"
-                value={mobile}
-                onChangeText={setMobile}
-                textAlign="left"
-              />
-            </View>
-
-            <View style={styles.inputWrapper}>
-              <Text style={styles.label}>کد اختصاصی شما</Text>
-              <TextInput
-                style={[styles.input, styles.readOnlyInput]}
-                value={pin}
-                editable={false}
-                textAlign="center"
-              />
-              <View style={styles.warningBox}>
-                <Text style={styles.warningText}>این کد برای ورودهای بعدی لازم است. لطفاً آن را یادداشت کنید.</Text>
-              </View>
-            </View>
-
-            <View style={styles.inputWrapper}>
-              <Text style={styles.label}>رمز عبور</Text>
-              <View style={styles.passwordContainer}>
-                <TextInput
-                  style={[styles.input, { flex: 1, borderTopLeftRadius: 0, borderBottomLeftRadius: 0 }]}
-                  placeholder="رمز عبور خود را وارد کنید"
-                  secureTextEntry={!showPassword}
-                  value={password}
-                  onChangeText={handlePasswordChange}
-                  textAlign="left"
-                />
-                <TouchableOpacity 
-                  style={styles.toggleBtn} 
-                  onPress={() => setShowPassword(!showPassword)}
-                >
-                  <Text style={styles.toggleText}>{showPassword ? 'مخفی' : 'نمایش'}</Text>
+            {step === 'success' && generatedPin ? (
+              <SuccessStep pin={generatedPin} copied={pinCopied} onCopy={copyPin} onContinue={enterDashboard} />
+            ) : (
+              <View style={styles.card}>
+                <Text style={styles.title}>{step === 'otp' ? 'کد تأیید را وارد کنید' : 'ساخت حساب آفاریکس'}</Text>
+                <Text style={styles.subtitle}>{step === 'otp' ? `کد ارسال‌شده به ${maskMobile(mobile)} را وارد کنید.` : 'اطلاعات خود را وارد کنید تا حساب شما ساخته شود.'}</Text>
+                {step === 'form' ? (
+                  <>
+                    <Field label="نام و نام خانوادگی" value={fullName} onChangeText={setFullName} placeholder="نام کامل خود را وارد کنید" />
+                    <Field label="شماره موبایل" value={mobile} onChangeText={(value) => setMobile(normalizeDigits(value))} placeholder="مثلاً 09123456789" keyboardType="phone-pad" maxLength={13} />
+                    <View style={styles.fieldHeader}><Text style={styles.optional}>اختیاری</Text><Text style={styles.label}>کد معرف</Text></View>
+                    <TextInput style={styles.input} value={referralCode} onChangeText={setReferralCode} placeholder="در صورت داشتن کد معرف" placeholderTextColor="#9aa8b5" autoCapitalize="characters" textAlign="right" />
+                    <View style={styles.field}><Text style={styles.label}>رمز عبور</Text><View style={styles.passwordBox}><TextInput style={styles.passwordInput} value={password} onChangeText={setPassword} placeholder="رمز عبور خود را وارد کنید" placeholderTextColor="#9aa8b5" secureTextEntry={!showPassword} autoCapitalize="none" textAlign="right" /><TouchableOpacity accessibilityRole="button" accessibilityLabel={showPassword ? 'مخفی کردن رمز عبور' : 'نمایش رمز عبور'} onPress={() => setShowPassword((visible) => !visible)} style={styles.eye}><Ionicons name={showPassword ? 'eye-off-outline' : 'eye-outline'} size={21} color="#718096" /></TouchableOpacity></View></View>
+                  </>
+                ) : (
+                  <>
+                    <View style={styles.otpNotice}><Ionicons name="shield-checkmark-outline" size={22} color="#0d9675" /><Text style={styles.otpNoticeText}>کد تأیید پیامکی را وارد کنید.</Text></View>
+                    <Field inputRef={otpInput} label="کد تأیید" value={otp} onChangeText={(value) => setOtp(normalizeDigits(value).replace(/\D/g, '').slice(0, 6))} placeholder="کد ۶ رقمی" keyboardType="number-pad" maxLength={6} autoFocus />
+                    <View style={styles.resendRow}><Text style={styles.cooldown}>{cooldown > 0 ? `ارسال مجدد تا ${cooldown} ثانیه` : 'کد را دریافت نکردید؟'}</Text><TouchableOpacity disabled={cooldown > 0 || busy} onPress={requestOtp}><Text style={[styles.resend, cooldown > 0 && styles.disabledText]}>ارسال مجدد</Text></TouchableOpacity></View>
+                  </>
+                )}
+                {!!error && <Text style={styles.error} accessibilityLiveRegion="polite">{error}</Text>}
+                <TouchableOpacity style={[styles.primaryButton, busy && styles.buttonDisabled]} onPress={step === 'form' ? requestOtp : completeRegistration} disabled={busy} accessibilityRole="button">
+                  {busy ? <><ActivityIndicator color="#fff" /><Text style={styles.buttonText}>{step === 'form' ? 'در حال ارسال...' : 'در حال ساخت حساب...'}</Text></> : <Text style={styles.buttonText}>{step === 'form' ? 'ارسال کد تأیید' : 'تأیید و ساخت حساب'}</Text>}
                 </TouchableOpacity>
+                <TouchableOpacity onPress={() => router.replace('/login')} style={styles.loginLink}><Text style={styles.loginLinkText}>حساب دارید؟ <Text style={styles.loginLinkStrong}>ورود</Text></Text></TouchableOpacity>
               </View>
-              
-              <View style={styles.strengthMeter}>
-                <View 
-                  style={[
-                    styles.strengthBar, 
-                    { 
-                      width: `${(passwordStrength / 3) * 100}%`,
-                      backgroundColor: getStrengthColor()
-                    }
-                  ]} 
-                />
-              </View>
-            </View>
-
-            <TouchableOpacity style={[styles.submitBtn, loading && styles.submitBtnDisabled]} onPress={handleRegister} disabled={loading}>
-              {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.submitBtnText}>ثبت نام</Text>}
-            </TouchableOpacity>
-
-            <Link href="/" asChild>
-              <TouchableOpacity style={styles.backLink}>
-                <Text style={styles.backLinkText}>بازگشت به صفحه اصلی</Text>
-              </TouchableOpacity>
-            </Link>
+            )}
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -204,47 +225,28 @@ export default function RegisterScreen() {
   );
 }
 
+function SuccessStep({ pin, copied, onCopy, onContinue }: { pin: string; copied: boolean; onCopy: () => void; onContinue: () => void }) {
+  return <View style={styles.card}>
+    <View style={styles.successIcon}><Ionicons name="checkmark" size={30} color="#fff" /></View>
+    <Text style={styles.title}>ثبت‌نام شما با موفقیت انجام شد</Text>
+    <Text style={styles.successText}>پین ورود به بخش‌های حساس حساب شما ساخته شد. آن را در جای امن نگهداری کنید.</Text>
+    <View style={styles.pinCard}><Text style={styles.pinLabel}>پین امنیتی شما</Text><Text style={styles.pinValue} accessibilityLabel="پین امنیتی">{pin}</Text><Text style={styles.pinWarning}>این پین فقط یک‌بار نمایش داده می‌شود.</Text></View>
+    <TouchableOpacity style={styles.copyButton} onPress={onCopy} accessibilityRole="button"><Ionicons name="copy-outline" size={19} color="#0c8f70" /><Text style={styles.copyText}>{copied ? 'پین کپی شد' : 'کپی پین'}</Text></TouchableOpacity>
+    <TouchableOpacity style={styles.primaryButton} onPress={onContinue} accessibilityRole="button"><Text style={styles.buttonText}>ورود به داشبورد</Text></TouchableOpacity>
+  </View>;
+}
+
+function Field({ label, value, onChangeText, placeholder, keyboardType, maxLength, inputRef, autoFocus }: { label: string; value: string; onChangeText: (value: string) => void; placeholder?: string; keyboardType?: 'phone-pad' | 'number-pad'; maxLength?: number; inputRef?: React.RefObject<TextInput | null>; autoFocus?: boolean }) {
+  return <View style={styles.field}><Text style={styles.label}>{label}</Text><TextInput ref={inputRef} style={styles.input} value={value} onChangeText={onChangeText} placeholder={placeholder} placeholderTextColor="#9aa8b5" keyboardType={keyboardType} maxLength={maxLength} autoFocus={autoFocus} autoCapitalize="none" textAlign="right" /></View>;
+}
+
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#ffffff',
-  },
-  pageWrapper: {
-    flexGrow: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    width: '100%',
-    padding: 20,
-    paddingBottom: 70,
-  },
-  card: {
-    backgroundColor: 'transparent',
-    width: '100%',
-    maxWidth: 420,
-    padding: 0,
-    borderRadius: 0,
-    shadowColor: '#000',
-    shadowOpacity: 0,
-    shadowRadius: 0,
-    elevation: 0,
-  },
-  header: { alignItems: 'center', marginBottom: 20 },
-  title: { fontSize: 24, fontWeight: 'bold', color: '#333', marginBottom: 8, fontFamily: 'Vazirmatn' },
-  subtitle: { fontSize: 14, color: '#666', textAlign: 'center', fontFamily: 'Vazirmatn' },
-  inputWrapper: { marginBottom: 16 },
-  label: { fontSize: 13, fontWeight: 'bold', color: '#333', marginBottom: 6, textAlign: 'right', fontFamily: 'Vazirmatn' },
-  input: { borderWidth: 1, borderColor: '#e0e0e0', borderRadius: 8, padding: 12, fontSize: 14, backgroundColor: '#fff', color: '#333', fontFamily: 'Vazirmatn' },
-  readOnlyInput: { backgroundColor: '#f9f9f9', color: '#555', fontWeight: 'bold', letterSpacing: 2, fontFamily: 'Vazirmatn' },
-  warningBox: { backgroundColor: 'rgba(231, 76, 60, 0.08)', padding: 10, borderRadius: 8, marginTop: 8 },
-  warningText: { color: '#e74c3c', fontSize: 12, textAlign: 'right', fontFamily: 'Vazirmatn' },
-  passwordContainer: { flexDirection: 'row-reverse', alignItems: 'center' },
-  toggleBtn: { borderWidth: 1, borderColor: '#e0e0e0', borderRightWidth: 0, borderTopLeftRadius: 8, borderBottomLeftRadius: 8, padding: 12, backgroundColor: '#fff', justifyContent: 'center', alignItems: 'center' },
-  toggleText: { color: '#0ed874', fontSize: 13, fontWeight: 'bold', fontFamily: 'Vazirmatn' },
-  strengthMeter: { height: 4, backgroundColor: '#dce0e5', borderRadius: 4, marginTop: 8, flexDirection: 'row-reverse', overflow: 'hidden' },
-  strengthBar: { height: '100%' },
-  submitBtn: { backgroundColor: '#0ed874', padding: 14, borderRadius: 8, alignItems: 'center', marginTop: 10 },
-  submitBtnDisabled: { opacity: 0.75 },
-  submitBtnText: { color: '#fff', fontSize: 16, fontWeight: 'bold', fontFamily: 'Vazirmatn' },
-  backLink: { marginTop: 20, alignItems: 'center' },
-  backLinkText: { color: '#333', fontSize: 14, fontFamily: 'Vazirmatn' },
+  safe: { flex: 1, backgroundColor: '#f5f8f9' }, flex: { flex: 1 }, page: { flexGrow: 1, padding: 20, justifyContent: 'center' }, shell: { width: '100%', maxWidth: 500, alignSelf: 'center' }, brandRow: { flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'center', marginBottom: 18, gap: 10 }, logo: { width: 44, height: 44, borderRadius: 13 }, brandText: { alignItems: 'flex-end' }, brandName: { fontFamily: 'VazirmatnBold', color: '#164354', fontSize: 21 }, brandCaption: { fontFamily: 'Vazirmatn', color: '#7b9198', fontSize: 10, marginTop: 1 }, card: { width: '100%', paddingVertical: 2 }, title: { fontFamily: 'VazirmatnBold', color: '#183b49', fontSize: 22, lineHeight: 34, textAlign: 'right' }, subtitle: { fontFamily: 'Vazirmatn', color: '#71838b', fontSize: 13, lineHeight: 23, textAlign: 'right', marginTop: 4, marginBottom: 13 }, field: { marginTop: 14 }, fieldHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 14, marginBottom: 7 }, label: { fontFamily: 'VazirmatnBold', color: '#334e5b', fontSize: 12, textAlign: 'right' }, optional: { fontFamily: 'Vazirmatn', color: '#8a9ba2', fontSize: 11 }, input: { width: '100%', minHeight: 49, borderWidth: 1, borderColor: '#dce7e9', borderRadius: 13, paddingHorizontal: 14, fontFamily: 'Vazirmatn', color: '#173b49', fontSize: 13, backgroundColor: '#fcfefe' }, passwordBox: { position: 'relative', justifyContent: 'center' }, passwordInput: { minHeight: 49, borderWidth: 1, borderColor: '#dce7e9', borderRadius: 13, paddingHorizontal: 46, fontFamily: 'Vazirmatn', color: '#173b49', fontSize: 13, backgroundColor: '#fcfefe' }, eye: { position: 'absolute', left: 12, height: '100%', width: 34, alignItems: 'center', justifyContent: 'center' }, error: { fontFamily: 'Vazirmatn', color: '#c24142', fontSize: 12, textAlign: 'right', lineHeight: 20, marginTop: 12 }, primaryButton: { minHeight: 52, borderRadius: 14, backgroundColor: '#0d9675', alignItems: 'center', justifyContent: 'center', flexDirection: 'row-reverse', gap: 8, marginTop: 20 }, buttonDisabled: { opacity: 0.72 }, buttonText: { fontFamily: 'VazirmatnBold', color: '#fff', fontSize: 14 }, loginLink: { alignItems: 'center', marginTop: 18 }, loginLinkText: { fontFamily: 'Vazirmatn', color: '#71838b', fontSize: 12 }, loginLinkStrong: { color: '#0d8c70', fontFamily: 'VazirmatnBold' }, otpNotice: { flexDirection: 'row-reverse', alignItems: 'center', gap: 8, backgroundColor: '#eefaf6', borderRadius: 12, padding: 12, marginTop: 4 }, otpNoticeText: { flex: 1, fontFamily: 'Vazirmatn', color: '#237467', fontSize: 12, textAlign: 'right' }, resendRow: { flexDirection: 'row-reverse', justifyContent: 'space-between', alignItems: 'center', marginTop: 14 }, cooldown: { fontFamily: 'Vazirmatn', color: '#82949b', fontSize: 11 }, resend: { fontFamily: 'VazirmatnBold', color: '#0d8f72', fontSize: 12 }, disabledText: { color: '#aab7ba' }, successIcon: { width: 58, height: 58, borderRadius: 29, backgroundColor: '#0d9675', alignSelf: 'center', alignItems: 'center', justifyContent: 'center', marginBottom: 14 }, successText: { fontFamily: 'Vazirmatn', color: '#667d86', fontSize: 13, lineHeight: 25, textAlign: 'right', marginTop: 10 }, pinCard: { marginTop: 18, borderRadius: 16, backgroundColor: '#f0faf7', borderWidth: 1, borderColor: '#cceee3', padding: 17, alignItems: 'center' }, pinLabel: { fontFamily: 'Vazirmatn', color: '#5b7e78', fontSize: 11 }, pinValue: { fontFamily: 'VazirmatnBold', color: '#135a54', fontSize: 30, letterSpacing: 8, marginTop: 5 }, pinWarning: { fontFamily: 'Vazirmatn', color: '#8a7770', fontSize: 10, textAlign: 'center', marginTop: 8 }, copyButton: { minHeight: 44, borderRadius: 12, borderWidth: 1, borderColor: '#bce5da', flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'center', gap: 7, marginTop: 13 }, copyText: { fontFamily: 'VazirmatnBold', color: '#0c8f70', fontSize: 12 },
+});
+
+Object.assign(styles as Record<string, unknown>, {
+  brandRow: { ...(styles as any).brandRow, flexDirection: 'row', gap: 0 },
+  brandText: { ...(styles as any).brandText, display: 'none' },
+  title: { ...(styles as any).title, textAlign: 'center' },
+  subtitle: { ...(styles as any).subtitle, textAlign: 'center' },
 });
