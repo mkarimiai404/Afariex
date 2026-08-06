@@ -103,6 +103,15 @@ export default function RegisterScreen() {
       setStep('otp');
     } catch (requestError) {
       const responseCode = readResponseCode(requestError);
+      if (responseCode === 'OTP_COOLDOWN') {
+        const responseData = (requestError as { responseData?: { data?: { resend_after?: number } } }).responseData;
+        setCooldown(Math.max(0, Number(responseData?.data?.resend_after || 0)));
+        setMobile(normalizedMobile);
+        setOtp('');
+        setStep('otp');
+        setError('کد قبلاً ارسال شده است؛ کد دریافتی را وارد کنید.');
+        return;
+      }
       setError(codeMessage[responseCode] || 'ارسال کد تأیید در حال حاضر امکان‌پذیر نیست.');
     } finally {
       setBusy(false);
