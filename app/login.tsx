@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { 
   View, 
   Text, 
@@ -18,11 +18,17 @@ import { showError } from '@/lib/toast';
 
 export default function LoginScreen() {
   const router = useRouter();
-  const { signIn, signOut } = useAuth();
+  const { isAuthenticated, isInitialized, signIn } = useAuth();
   const [mobile, setMobile] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+
+  useEffect(() => {
+    if (isInitialized && isAuthenticated) {
+      router.replace('/dashboard');
+    }
+  }, [isAuthenticated, isInitialized, router]);
 
    const handleLogin = async () => {
     if (loading) return;
@@ -34,7 +40,6 @@ export default function LoginScreen() {
     setLoading(true);
 
     try {
-      await signOut();
       // استفاده از FormData برای سازگاری کامل با سرورهای PHP
       const formData = new FormData();
       formData.append('mobile', mobile);
@@ -59,8 +64,6 @@ export default function LoginScreen() {
           userName: fullName ? String(fullName) : null,
           userId: userId ? String(userId) : null,
         });
-
-        router.replace('/dashboard');
       } else {
         showError('خطا در ورود', data.message || 'شماره موبایل یا رمز عبور اشتباه است.');
       }

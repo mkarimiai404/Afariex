@@ -1,7 +1,8 @@
-import { Slot, useRootNavigationState, useRouter, useSegments } from 'expo-router';
+import { Slot, usePathname, useRootNavigationState, useRouter } from 'expo-router';
 import { useFonts } from 'expo-font';
 import * as SplashScreen from 'expo-splash-screen';
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
+import { StyleSheet, View } from 'react-native';
 import Toast from 'react-native-toast-message';
 
 import { AuthProvider, useAuth } from '@/lib/auth-context';
@@ -22,33 +23,38 @@ const projectFonts = {
   [PROJECT_FONT_FAMILIES.thin]: require('../assets/fonts/Vazirmatn-Thin.ttf'),
 };
 
+const PUBLIC_AUTH_PATHS = new Set(['/', '/login', '/register']);
+
 function AuthRouteBoundary({ children }: { children: React.ReactNode }) {
   const router = useRouter();
-  const segments = useSegments();
+  const pathname = usePathname();
   const navigationState = useRootNavigationState();
   const { isAuthenticated, isInitialized } = useAuth();
-  const route = segments[0] as string | undefined;
-  const publicRoute = route === 'login' || route === 'register';
-  const redirectingToLogin = isInitialized && !isAuthenticated && !publicRoute;
-  const redirectingToDashboard = isInitialized && isAuthenticated && (route === 'login' || route === 'index' || !route);
+  const initialEntryPending = useRef(true);
+  const navigationReady = Boolean(navigationState?.key);
+  const publicRoute = PUBLIC_AUTH_PATHS.has(pathname);
+  const coldStartRootRedirect = navigationReady && isInitialized && initialEntryPending.current && !isAuthenticated && pathname === '/';
+  const redirectingToLogin = navigationReady && isInitialized && !isAuthenticated && (!publicRoute || coldStartRootRedirect);
 
   useEffect(() => {
-    if (!navigationState?.key || !isInitialized) return;
-    if (__DEV__) console.log('[Auth] protected-route decision', { route: route || 'index', isAuthenticated, publicRoute });
+    if (!navigationReady || !isInitialized) return;
+    initialEntryPending.current = false;
+    if (__DEV__) console.log('[Auth] protected-route decision', { pathname, isAuthenticated, publicRoute });
     if (redirectingToLogin) router.replace('/login' as any);
-    if (redirectingToDashboard) router.replace('/dashboard' as any);
-  }, [isAuthenticated, isInitialized, navigationState?.key, publicRoute, redirectingToDashboard, redirectingToLogin, route, router]);
+  }, [isAuthenticated, isInitialized, navigationReady, pathname, publicRoute, redirectingToLogin, router]);
 
   useEffect(() => {
-    if (isInitialized && !redirectingToLogin && !redirectingToDashboard) {
+    if (navigationReady && isInitialized && !redirectingToLogin) {
       SplashScreen.hideAsync().catch(() => undefined);
     }
-  }, [isInitialized, redirectingToDashboard, redirectingToLogin]);
+  }, [isInitialized, navigationReady, redirectingToLogin]);
 
-  if (!isInitialized) return null;
-  if (redirectingToLogin || redirectingToDashboard) return null;
-
-  return <>{children}</>;
+  return (
+    <View style={styles.routeContainer}>
+      {children}
+      {(!isInitialized || redirectingToLogin) && <View style={styles.routeShield} pointerEvents="auto" />}
+    </View>
+  );
 }
 
 export default function RootLayout() {
@@ -66,3 +72,11 @@ export default function RootLayout() {
     </AuthProvider>
   );
 }
+
+const styles = StyleSheet.create({
+  routeContainer: { flex: 1 },
+  routeShield: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: '#ffffff',
+  },
+});
