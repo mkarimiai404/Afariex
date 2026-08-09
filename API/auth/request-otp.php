@@ -34,7 +34,15 @@ try {
     $ipHash = otp_requester_hash();
     $cooldown = $pdo->prepare('SELECT id, created_at, expires_at FROM phone_verification_codes WHERE mobile = ? AND purpose = ? AND used_at IS NULL AND expires_at > NOW() ORDER BY id DESC LIMIT 1');
     $cooldown->execute([$mobile, $purpose]);
-    if ($cooldown->fetch()) otp_json(['success'=>false,'code'=>'OTP_COOLDOWN','message'=>'لطفاً قبل از ارسال مجدد کمی صبر کنید.'],429);
+    if ($activeOtp = $cooldown->fetch()) {
+        $createdAt = strtotime((string)$activeOtp['created_at']);
+        $expiresAt = strtotime((string)$activeOtp['expires_at']);
+        $resendAfter = $createdAt === false ? 60 : max(0, 60 - (time() - $createdAt));
+        otp_json(['success'=>false,'code'=>'OTP_COOLDOWN','message'=>'کد قبلاً ارسال شده است؛ کد دریافتی را وارد کنید.','data'=>[
+            'resend_after'=>$resendAfter,
+            'expires_in'=>$expiresAt === false ? 0 : max(0, $expiresAt - time()),
+        ]],429);
+    }
     $rate = $pdo->prepare('SELECT COUNT(*) FROM phone_verification_codes WHERE (mobile = ? OR requester_ip_hash = ?) AND purpose = ? AND created_at >= DATE_SUB(NOW(), INTERVAL 1 HOUR)');
     $rate->execute([$mobile, $ipHash, $purpose]);
     if ((int)$rate->fetchColumn() >= 5) otp_json(['success'=>false,'code'=>'OTP_RATE_LIMITED','message'=>'تعداد درخواست‌ها بیش از حد مجاز است.'],429);
@@ -52,7 +60,7 @@ try {
         $pdo->prepare('DELETE FROM phone_verification_codes WHERE id = ?')->execute([$id]);
         $publicCode = (string)($sms['code'] ?? 'OTP_SEND_FAILED');
         error_log('OTP delivery rejected code=' . $publicCode . ' purpose=' . $purpose . ' phone=' . mask_iran_mobile($mobile));
-        otp_json(['success'=>false,'code'=>$publicCode,'message'=>'ارسال کد تأیید در حال حاضر امکان‌پذیر نیست.'],503);
+        otp_json(['success'=>false,'code'=>$publicCode,'message'=>sms_public_error_message($publicCode)],503);
     }
     $data = ['purpose'=>$purpose,'expires_in'=>300,'resend_after'=>60,'provider_receipt'=>sms_mask_request_id($sms['request_id'] ?? null)];
     if (otp_dev_code_allowed()) $data['development_code'] = $otp;

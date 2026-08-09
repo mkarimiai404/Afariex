@@ -2,25 +2,25 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/layout.php';
+require_once __DIR__ . '/remittance_receipt_helpers.php';
+require_once __DIR__ . '/balance_view_helpers.php';
 
 require_login();
 require_permission('view');
 
 $id = (int)($_GET['id'] ?? 0);
-$flash = get_flash();
-
 $remittance = null;
-$user = null;
-
 if ($id > 0) {
-    $remittanceStmt = db()->prepare(
-        'SELECT r.id, r.user_id, r.agency, r.sender, r.receiver, r.amount_toman, r.amount_afghani, r.status, r.created_at, u.mobile, u.first_name, u.last_name
+    $stmt = db()->prepare(
+        'SELECT r.id, r.user_id, r.agency, r.sender, r.receiver, r.amount_afghani, r.status, r.created_at, u.balance AS user_balance,
+            (SELECT a.address FROM agencies a WHERE BINARY a.name = BINARY r.agency ORDER BY a.id DESC LIMIT 1) AS agency_address
          FROM remittances r
-         LEFT JOIN users u ON r.user_id = u.id
-         WHERE r.id = ?'
+         LEFT JOIN users u ON u.id = r.user_id
+         WHERE r.id = ?
+         LIMIT 1'
     );
-    $remittanceStmt->execute([$id]);
-    $remittance = $remittanceStmt->fetch(PDO::FETCH_ASSOC) ?: null;
+    $stmt->execute([$id]);
+    $remittance = $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
 }
 
 if (!$remittance) {
@@ -30,310 +30,56 @@ if (!$remittance) {
     exit;
 }
 
-$status = (string)($remittance['status'] ?? '');
-$statusText = match ($status) {
-    'pending' => 'در انتظار',
-    'approved' => 'تایید شده',
-    'rejected' => 'رد شده',
-    'paid' => 'پرداخت شده',
-    default => 'نامشخص',
-};
-
+$trackingNumber = remittance_customer_tracking_number((int)$remittance['id']);
 $createdAt = to_jalali_datetime((string)$remittance['created_at']);
-$receiptNumber = 'RCPT-' . str_pad((string)$remittance['id'], 6, '0', STR_PAD_LEFT);
-$userMobile = trim((string)($remittance['mobile'] ?? ''));
-$userMobile = $userMobile !== '' ? $userMobile : 'نامشخص';
-$fullName = trim(trim((string)($remittance['first_name'] ?? '')) . ' ' . trim((string)($remittance['last_name'] ?? '')));
-$fullName = $fullName !== '' ? $fullName : 'نامشخص';
-$approvedStampVisible = in_array($status, ['approved', 'paid'], true);
+$amountAfghani = (float)$remittance['amount_afghani'];
+$destination = trim((string)($remittance['agency_address'] ?? ''));
+if ($destination === '') $destination = trim((string)$remittance['agency']);
+$statusText = remittance_customer_status((string)$remittance['status']);
 
-render_page_start('نمایش رسید حواله', 'remittances');
+render_page_start('تأییدیه حواله', 'remittances');
 ?>
-
 <style>
-    .receipt-shell {
-        max-width: 980px;
-        margin: 0 auto;
-        padding: 8px 0;
-    }
-
-    .receipt-paper {
-        position: relative;
-        overflow: hidden;
-        background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
-        border: 1px solid #dbe4ef;
-        border-radius: 18px;
-        box-shadow: 0 20px 45px rgba(15, 23, 42, 0.08);
-        padding: 28px;
-    }
-
-    .receipt-paper::before {
-        content: '';
-        position: absolute;
-        inset: 0;
-        background:
-            radial-gradient(circle at top right, rgba(37, 99, 235, 0.08), transparent 28%),
-            radial-gradient(circle at bottom left, rgba(5, 150, 105, 0.08), transparent 24%);
-        pointer-events: none;
-    }
-
-    .receipt-header,
-    .receipt-grid,
-    .receipt-footer {
-        position: relative;
-        z-index: 1;
-    }
-
-    .receipt-header {
-        display: flex;
-        align-items: flex-start;
-        justify-content: space-between;
-        gap: 16px;
-        margin-bottom: 22px;
-    }
-
-    .receipt-title {
-        margin: 0;
-        color: #0f172a;
-        font-size: 28px;
-        font-weight: 800;
-        letter-spacing: -0.02em;
-    }
-
-    .receipt-subtitle {
-        margin-top: 6px;
-        color: #64748b;
-        font-size: 14px;
-        line-height: 1.7;
-    }
-
-    .receipt-meta {
-        display: flex;
-        flex-direction: column;
-        align-items: flex-end;
-        gap: 8px;
-    }
-
-    .receipt-id {
-        display: inline-flex;
-        align-items: center;
-        gap: 8px;
-        background: #eff6ff;
-        color: #1d4ed8;
-        border: 1px solid #bfdbfe;
-        padding: 10px 14px;
-        border-radius: 12px;
-        font-size: 14px;
-        font-weight: 800;
-    }
-
-    .receipt-status {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        padding: 8px 14px;
-        border-radius: 999px;
-        font-size: 12px;
-        font-weight: 800;
-        letter-spacing: 0.04em;
-        text-transform: uppercase;
-        border: 1px solid #a7f3d0;
-        background: #ecfdf5;
-        color: #047857;
-    }
-
-    .receipt-stamp {
-        position: absolute;
-        top: 26px;
-        left: 24px;
-        z-index: 2;
-        transform: rotate(-16deg);
-        border: 4px solid rgba(5, 150, 105, 0.28);
-        color: rgba(5, 150, 105, 0.84);
-        background: rgba(236, 253, 245, 0.72);
-        border-radius: 14px;
-        padding: 10px 18px;
-        font-size: 38px;
-        font-weight: 900;
-        letter-spacing: 2px;
-        text-transform: uppercase;
-        box-shadow: 0 12px 30px rgba(5, 150, 105, 0.12);
-        pointer-events: none;
-        user-select: none;
-    }
-
-    .receipt-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
-        gap: 14px;
-        margin-top: 14px;
-    }
-
-    .receipt-cell {
-        background: #ffffff;
-        border: 1px solid #e2e8f0;
-        border-radius: 14px;
-        padding: 14px 16px;
-        min-height: 82px;
-        display: flex;
-        flex-direction: column;
-        justify-content: center;
-    }
-
-    .receipt-label {
-        color: #64748b;
-        font-size: 12px;
-        font-weight: 700;
-        margin-bottom: 8px;
-    }
-
-    .receipt-value {
-        color: #0f172a;
-        font-size: 16px;
-        font-weight: 800;
-        line-height: 1.55;
-        word-break: break-word;
-    }
-
-    .receipt-value strong {
-        color: #1d4ed8;
-    }
-
-    .receipt-footer {
-        margin-top: 22px;
-        display: flex;
-        justify-content: flex-end;
-        gap: 10px;
-    }
-
-    .receipt-print {
-        height: 42px;
-        padding: 0 18px;
-        border: 1px solid #1d4ed8;
-        border-radius: 10px;
-        background: #2563eb;
-        color: #fff;
-        font-weight: 800;
-        cursor: pointer;
-        transition: 160ms ease;
-    }
-
-    .receipt-print:hover {
-        background: #1d4ed8;
-    }
-
-    .receipt-note {
-        margin-top: 14px;
-        color: #64748b;
-        font-size: 13px;
-        line-height: 1.7;
-        position: relative;
-        z-index: 1;
-    }
-
-    @media print {
-        .app-shell .sidebar,
-        .topbar,
-        .content > .alert,
-        .content > .topbar,
-        .receipt-footer,
-        .receipt-note {
-            display: none !important;
-        }
-
-        .content {
-            padding: 0 !important;
-        }
-
-        .receipt-shell {
-            max-width: none;
-        }
-
-        .receipt-paper {
-            box-shadow: none;
-            border-color: #cbd5e1;
-        }
-
-        .receipt-stamp {
-            border-color: rgba(5, 150, 105, 0.2);
-            color: rgba(5, 150, 105, 0.55);
-            background: transparent;
-        }
-    }
+@font-face{font-family:'ReceiptVazirmatn';src:url('fonts/Vazirmatn-Regular.woff2') format('woff2');font-weight:400;font-style:normal;font-display:swap}
+@font-face{font-family:'ReceiptVazirmatn';src:url('fonts/Vazirmatn-Bold.woff2') format('woff2');font-weight:700;font-style:normal;font-display:swap}
+@page{size:A4;margin:0}
+.receipt-actions{max-width:210mm;margin:0 auto 14px;display:flex;justify-content:flex-end}
+.admin-current-balance{max-width:210mm;margin:0 auto 14px;padding:16px 18px;border-radius:14px;background:#ecfdf5;border:1px solid #a7f3d0;color:#065f46;font-size:16px;font-weight:700;display:flex;justify-content:space-between;gap:16px;align-items:center}.admin-current-balance strong{font-size:20px;color:#047857;white-space:nowrap;direction:rtl}
+.remittance-receipt{width:210mm;min-height:297mm;margin:0 auto;background:#fff;color:#17324d;padding:18mm 17mm 15mm;position:relative;direction:rtl;font-family:'ReceiptVazirmatn',Tahoma,sans-serif;box-shadow:0 18px 45px rgba(15,23,42,.10)}
+.remittance-receipt *{box-sizing:border-box;font-family:'ReceiptVazirmatn',Tahoma,sans-serif}.receipt-accent{height:6px;background:#0ebf92;border-radius:8px;margin-bottom:15mm}.receipt-brand{text-align:center}.receipt-logo{width:72px;height:72px;object-fit:contain;display:block;margin:0 auto 5mm}.receipt-brand-name{font-size:25px;font-weight:700;color:#0b8f72}.receipt-brand-subtitle{margin-top:2mm;color:#718096;font-size:11px}
+.confirmation-title{margin:11mm 0 8mm;padding:6mm;background:#f0fdfa;border:1px solid #99f6e4;border-radius:14px;text-align:center;font-size:19px;font-weight:700;color:#0f5e50}.tracking-number{color:#0b8f72;direction:ltr;unicode-bidi:embed;display:inline-block}.receipt-details{border:1px solid #dce7ef;border-radius:14px;overflow:hidden}.receipt-row{display:flex;border-bottom:1px solid #e8eff4;min-height:15mm;align-items:center}.receipt-row:last-child{border-bottom:0}.receipt-label{width:28%;padding:4mm 5mm;color:#64748b;font-size:12px}.receipt-value{width:72%;padding:4mm 5mm;font-size:14px;font-weight:700;color:#17324d;overflow-wrap:anywhere}
+.receipt-amount{margin-top:8mm;padding:8mm 7mm;text-align:center;background:#0f766e;border-radius:16px;color:#fff}.amount-label{font-size:12px;opacity:.82}.amount-value{margin-top:3mm;font-size:24px;font-weight:700;line-height:1.8}.amount-words{font-size:17px}.amount-currency{font-size:15px}.receipt-status-row{margin-top:8mm;display:flex;align-items:center;justify-content:space-between;padding:5mm 6mm;border:1px solid #dce7ef;border-radius:13px}.receipt-status{background:#ecfdf5;color:#047857;border:1px solid #a7f3d0;border-radius:999px;padding:2.5mm 6mm;font-weight:700}.receipt-notice{margin-top:9mm;padding:6mm;background:#f8fafc;border-right:4px solid #0ebf92;border-radius:10px;font-size:13px;line-height:2.05;color:#334155}.receipt-signature{position:absolute;bottom:13mm;left:17mm;right:17mm;text-align:center;border-top:1px solid #dce7ef;padding-top:5mm;color:#0b8f72;font-size:13px;font-weight:700;direction:ltr}
+@media(max-width:900px){.remittance-receipt{width:100%;min-height:auto;padding:28px 22px}.receipt-actions,.admin-current-balance{max-width:none}.admin-current-balance{align-items:flex-start;flex-direction:column}.receipt-signature{position:static;margin-top:44px}.amount-value{font-size:20px}}
+@media print{html,body{background:#fff!important}.sidebar,.topbar,.receipt-actions,.admin-current-balance{display:none!important}.app-shell,.content{display:block!important;height:auto!important;overflow:visible!important;padding:0!important;margin:0!important;background:#fff!important}.remittance-receipt{width:210mm!important;min-height:297mm!important;margin:0!important;padding:18mm 17mm 15mm!important;box-shadow:none!important;print-color-adjust:exact;-webkit-print-color-adjust:exact}}
 </style>
 
-<div class="receipt-shell">
-    <?php if (($flash['type'] ?? '') === 'error'): ?>
-        <div class="alert error"><?= e((string)($flash['message'] ?? '')) ?></div>
-    <?php endif; ?>
+<div class="receipt-actions"><button type="button" class="btn btn-primary" onclick="window.print()">چاپ یا ذخیره PDF</button></div>
+<aside class="admin-current-balance"><span>موجودی فعلی کاربر</span><strong><?= e(admin_balance_with_unit($remittance['user_balance'] ?? null)) ?></strong></aside>
+<article class="remittance-receipt" lang="fa" dir="rtl">
+  <div class="receipt-accent"></div>
+  <header class="receipt-brand">
+    <img class="receipt-logo" src="../assets/images/logo.png" alt="Afariex">
+    <div class="receipt-brand-name">صرافی آفارایکس</div>
+    <div class="receipt-brand-subtitle">تأییدیه رسمی ثبت حواله</div>
+  </header>
 
-    <div class="receipt-paper">
-        <?php if ($approvedStampVisible): ?>
-            <div class="receipt-stamp">APPROVED</div>
-        <?php endif; ?>
+  <h1 class="confirmation-title">تأییدیه شماره حواله: <span class="tracking-number"><?= e(remittance_persian_digits($trackingNumber)) ?></span></h1>
 
-        <div class="receipt-header">
-            <div>
-                <h1 class="receipt-title">رسید حواله</h1>
-                <div class="receipt-subtitle">
-                    تاریخ صدور: <?= e((string)$createdAt) ?><br>
-                    این رسید به صورت خودکار از اطلاعات ثبت‌شده در جدول حواله‌ها و کاربران تولید شده است.
-                </div>
-            </div>
+  <section class="receipt-details">
+    <div class="receipt-row"><div class="receipt-label">تاریخ</div><div class="receipt-value"><?= e($createdAt) ?></div></div>
+    <div class="receipt-row"><div class="receipt-label">فرستنده</div><div class="receipt-value"><?= e((string)$remittance['sender']) ?></div></div>
+    <div class="receipt-row"><div class="receipt-label">گیرنده</div><div class="receipt-value"><?= e((string)$remittance['receiver']) ?></div></div>
+    <div class="receipt-row"><div class="receipt-label">مقصد</div><div class="receipt-value"><?= e($destination) ?></div></div>
+  </section>
 
-            <div class="receipt-meta">
-                <div class="receipt-id">شناسه رسید: <?= e($receiptNumber) ?></div>
-                <div class="receipt-status"><?= e($statusText) ?></div>
-            </div>
-        </div>
+  <section class="receipt-amount">
+    <div class="amount-label">مبلغ حواله</div>
+    <div class="amount-value"><?= e(remittance_formatted_amount($amountAfghani)) ?> <span class="amount-words">«<?= e(remittance_amount_words($amountAfghani)) ?>»</span> <span class="amount-currency">افغانی</span></div>
+  </section>
 
-        <div class="receipt-grid">
-            <div class="receipt-cell">
-                <span class="receipt-label">شناسه حواله</span>
-                <span class="receipt-value">#<?= e((string)$remittance['id']) ?></span>
-            </div>
-            <div class="receipt-cell">
-                <span class="receipt-label">فرستنده</span>
-                <span class="receipt-value"><?= e((string)$remittance['sender']) ?></span>
-            </div>
-            <div class="receipt-cell">
-                <span class="receipt-label">گیرنده</span>
-                <span class="receipt-value"><?= e((string)$remittance['receiver']) ?></span>
-            </div>
-            <div class="receipt-cell">
-                <span class="receipt-label">مبلغ (تومان)</span>
-                <span class="receipt-value"><strong><?= number_format((float)$remittance['amount_toman']) ?></strong></span>
-            </div>
-            <div class="receipt-cell">
-                <span class="receipt-label">مبلغ (افغانی)</span>
-                <span class="receipt-value"><strong><?= number_format((float)$remittance['amount_afghani']) ?></strong></span>
-            </div>
-            <div class="receipt-cell">
-                <span class="receipt-label">تاریخ</span>
-                <span class="receipt-value"><?= e((string)$createdAt) ?></span>
-            </div>
-            <div class="receipt-cell">
-                <span class="receipt-label">موبایل کاربر</span>
-                <span class="receipt-value" dir="ltr"><?= e($userMobile) ?></span>
-            </div>
-            <div class="receipt-cell">
-                <span class="receipt-label">نام کاربر</span>
-                <span class="receipt-value"><?= e($fullName) ?></span>
-            </div>
-            <div class="receipt-cell">
-                <span class="receipt-label">نمایندگی</span>
-                <span class="receipt-value"><?= e((string)$remittance['agency']) ?></span>
-            </div>
-        </div>
-
-        <div class="receipt-note">
-            وضعیت حواله: <?= e($statusText) ?>. در صورت تایید یا پرداخت، مهر Approved روی رسید نمایش داده می‌شود.
-        </div>
-
-        <div class="receipt-footer">
-            <button type="button" class="receipt-print" onclick="window.print()">چاپ رسید</button>
-        </div>
-    </div>
-</div>
+  <section class="receipt-status-row"><span>وضعیت حواله</span><span class="receipt-status"><?= e($statusText) ?></span></section>
+  <section class="receipt-notice">مشتری گرامی، حواله شما با موفقیت ثبت شد.<br>لطفاً هنگام دریافت وجه، اصل تذکره یا کارت شناسایی معتبر به همراه داشته باشید.</section>
+  <footer class="receipt-signature">AfaraX Exchange</footer>
+</article>
 
 <?php render_page_end(); ?>

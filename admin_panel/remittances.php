@@ -2,6 +2,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/layout.php';
+require_once __DIR__ . '/balance_view_helpers.php';
 
 require_login();
 require_permission('view');
@@ -30,8 +31,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $agency = trim($_POST['agency'] ?? '');
         $sender = trim($_POST['sender'] ?? '');
         $receiver = trim($_POST['receiver'] ?? '');
-        $amountToman = (float)($_POST['amount_toman'] ?? 0);
-        $amountAfghani = (float)($_POST['amount_afghani'] ?? 0);
+        $amountToman = trim((string)($_POST['amount_toman'] ?? ''));
+        $amountAfghani = trim((string)($_POST['amount_afghani'] ?? ''));
+        $isValidRemittanceAmount = static function (string $value): bool {
+            return preg_match('/^(?:0|[1-9]\d*)(?:\.\d+)?$/', $value) === 1 && (float)$value > 0;
+        };
         $status = trim($_POST['status'] ?? 'pending');
         $allowedStatuses = ['pending', 'approved', 'rejected', 'paid'];
 
@@ -48,7 +52,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         if ($action === 'create') {
             require_permission('create');
-            if ($agency === '' || $sender === '' || $receiver === '' || $amountToman <= 0 || $amountAfghani <= 0 || $status === '') {
+            $createNonce = trim((string)($_POST['create_nonce'] ?? ''));
+            if ($createNonce === '' || !hash_equals((string)($_SESSION['remittance_create_nonce'] ?? ''), $createNonce)) {
+                flash('error', 'Invalid or already processed remittance request.');
+                header('Location: remittances.php?page=' . $page);
+                exit;
+            }
+            if ($agency === '' || $sender === '' || $receiver === '' || !$isValidRemittanceAmount($amountToman) || !$isValidRemittanceAmount($amountAfghani) || $status === '') {
                 flash('error', 'لطفاً تمام فیلدهای ضروری را وارد کنید.');
             } else {
                 if (!in_array($status, $allowedStatuses, true)) {
@@ -70,7 +80,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                         $currentBalance = (float)($userRow['balance'] ?? 0);
 
-                        if ($currentBalance < $amountToman) {
+                        $sufficientStmt = db()->prepare('SELECT id FROM users WHERE id = ? AND balance >= ?');
+                        $sufficientStmt->execute([$userId, $amountToman]);
+                        if (!$sufficientStmt->fetchColumn()) {
                             db()->rollBack();
                             flash('error', 'Insufficient Balance');
                             header('Location: remittances.php?page=' . $page);
@@ -93,6 +105,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                         log_activity('create', 'remittances', $remittanceId, "ایجاد حواله برای کاربر {$mobile}");
                         db()->commit();
+                        unset($_SESSION['remittance_create_nonce']);
                         flash('success', 'حواله با موفقیت ثبت شد.');
                     } catch (Throwable $e) {
                         if (db()->inTransaction()) {
@@ -105,7 +118,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } elseif ($action === 'update') {
             require_permission('edit');
             $id = (int)($_POST['id'] ?? 0);
-            if ($id <= 0 || $agency === '' || $sender === '' || $receiver === '' || $amountToman <= 0 || $amountAfghani <= 0 || $status === '') {
+            if ($id <= 0 || $agency === '' || $sender === '' || $receiver === '' || !$isValidRemittanceAmount($amountToman) || !$isValidRemittanceAmount($amountAfghani) || $status === '') {
                 flash('error', 'اطلاعات ویرایش نامعتبر است.');
             } else {
                 if (!in_array($status, $allowedStatuses, true)) {
@@ -246,7 +259,7 @@ $limit = (int)$perPage;
 $offset = (int)$offset;
 
 $stmtSql = "
-    SELECT r.id, r.user_id, u.mobile, r.agency, r.sender, r.receiver, r.amount_toman, r.amount_afghani, r.status, r.created_at 
+    SELECT r.id, r.user_id, u.mobile, u.balance AS user_balance, r.agency, r.sender, r.receiver, r.amount_toman, r.amount_afghani, r.status, r.created_at
     FROM remittances r
     LEFT JOIN users u ON r.user_id = u.id
     {$whereSql}
@@ -259,7 +272,7 @@ $rows = $stmt->fetchAll();
 
 if ($exportExcel) {
     $exportStmt = db()->prepare("
-        SELECT r.id, r.user_id, u.mobile, r.agency, r.sender, r.receiver, r.amount_toman, r.amount_afghani, r.status, r.created_at
+        SELECT r.id, r.user_id, u.mobile, u.balance AS user_balance, r.agency, r.sender, r.receiver, r.amount_toman, r.amount_afghani, r.status, r.created_at
         FROM remittances r
         LEFT JOIN users u ON r.user_id = u.id
         {$whereSql}
@@ -271,6 +284,7 @@ if ($exportExcel) {
         $exportRows[] = [
             '#' . (string)$row['id'],
             (string)($row['mobile'] ?? 'نامشخص'),
+            admin_balance_with_unit($row['user_balance'] ?? null),
             (string)$row['agency'],
             (string)$row['sender'],
             (string)$row['receiver'],
@@ -283,14 +297,14 @@ if ($exportExcel) {
 
     export_xls_table(
         'Remittances_Report_' . date('Ymd_His') . '.xls',
-        ['شناسه', 'موبایل کاربر', 'نمایندگی', 'فرستنده', 'گیرنده', 'مبلغ (تومان)', 'مبلغ (افغانی)', 'وضعیت', 'تاریخ'],
+        ['شناسه', 'موبایل کاربر', 'موجودی فعلی کاربر', 'نمایندگی', 'فرستنده', 'گیرنده', 'مبلغ حواله (تومان)', 'مبلغ حواله (افغانی)', 'وضعیت', 'تاریخ'],
         $exportRows
     );
 }
 
 if ($exportPrint) {
     $printStmt = db()->prepare("
-        SELECT r.id, r.user_id, u.mobile, r.agency, r.sender, r.receiver, r.amount_toman, r.amount_afghani, r.status, r.created_at
+        SELECT r.id, r.user_id, u.mobile, u.balance AS user_balance, r.agency, r.sender, r.receiver, r.amount_toman, r.amount_afghani, r.status, r.created_at
         FROM remittances r
         LEFT JOIN users u ON r.user_id = u.id
         {$whereSql}
@@ -302,6 +316,7 @@ if ($exportPrint) {
         $printRows[] = [
             '#' . (string)$row['id'],
             (string)($row['mobile'] ?? 'نامشخص'),
+            admin_balance_with_unit($row['user_balance'] ?? null),
             (string)$row['agency'],
             (string)$row['sender'],
             (string)$row['receiver'],
@@ -314,13 +329,17 @@ if ($exportPrint) {
 
     render_print_table_view(
         'گزارش حواله‌ها',
-        ['شناسه', 'موبایل کاربر', 'نمایندگی', 'فرستنده', 'گیرنده', 'مبلغ (تومان)', 'مبلغ (افغانی)', 'وضعیت', 'تاریخ'],
+        ['شناسه', 'موبایل کاربر', 'موجودی فعلی کاربر', 'نمایندگی', 'فرستنده', 'گیرنده', 'مبلغ حواله (تومان)', 'مبلغ حواله (افغانی)', 'وضعیت', 'تاریخ'],
         $printRows,
         'فیلتر بازه تاریخ اعمال شده است.'
     );
 }
 
 $csrf = csrf_token();
+if (empty($_SESSION['remittance_create_nonce'])) {
+    $_SESSION['remittance_create_nonce'] = bin2hex(random_bytes(16));
+}
+$remittanceCreateNonce = (string)$_SESSION['remittance_create_nonce'];
 
 function rm_status_class(string $status): string {
     return match ($status) {
@@ -398,6 +417,9 @@ render_page_start('مدیریت حواله‌ها', 'remittances');
     .btn-submit { background: var(--rm-primary); color: #fff; border: none; border-radius: 10px; height: 44px; padding: 0 24px; font-size: 14px; font-weight: 700; cursor: pointer; transition: var(--rm-transition); }
     .btn-submit:hover { background: var(--rm-primary-hover); }
     .persian-amount { font-size: 12px; color: var(--rm-primary); font-weight: 700; min-height: 18px; }
+    .rm-current-balance { display:inline-flex;padding:7px 10px;border-radius:10px;background:#ecfdf5;color:#047857;border:1px solid #a7f3d0;font-weight:800;white-space:nowrap;direction:rtl; }
+    .rm-balance-review { margin-bottom:16px;padding:15px 17px;border-radius:12px;background:#ecfdf5;border:1px solid #a7f3d0;color:#065f46;font-weight:800;text-align:right; }
+    @media (max-width: 840px) { .rm-current-balance { width:100%;box-sizing:border-box;justify-content:center; } }
     .active-rate-info { font-size: 13px; color: var(--rm-muted); background: #f1f5f9; padding: 10px; border-radius: 8px; text-align: center; font-weight: bold; margin-bottom: 10px;}
 </style>
 <style>
@@ -500,6 +522,7 @@ render_page_start('مدیریت حواله‌ها', 'remittances');
                     <tr>
                         <th>#</th>
                         <th>موبایل کاربر</th>
+                        <th>موجودی فعلی کاربر</th>
                         <th>نمایندگی</th>
                         <th>فرستنده</th>
                         <th>گیرنده</th>
@@ -519,17 +542,19 @@ render_page_start('مدیریت حواله‌ها', 'remittances');
                         <th><input class="rm-filter-input" data-col="6" placeholder="جستجو"></th>
                         <th><input class="rm-filter-input" data-col="7" placeholder="جستجو"></th>
                         <th><input class="rm-filter-input" data-col="8" placeholder="جستجو"></th>
+                        <th><input class="rm-filter-input" data-col="9" placeholder="جستجو"></th>
                         <th></th>
                     </tr>
                 </thead>
                 <tbody>
                     <?php if (empty($rows)): ?>
-                        <tr><td colspan="10" style="text-align: center; color: var(--rm-muted); padding: 32px;">هیچ حواله‌ای یافت نشد.</td></tr>
+                        <tr><td colspan="11" style="text-align: center; color: var(--rm-muted); padding: 32px;">هیچ حواله‌ای یافت نشد.</td></tr>
                     <?php else: ?>
                         <?php foreach ($rows as $row): ?>
                             <tr>
                                 <td><strong><?= e((string)$row['id']) ?></strong></td>
                                 <td dir="ltr" style="text-align: right;"><?= e((string)($row['mobile'] ?? 'نامشخص')) ?></td>
+                                <td><span class="rm-current-balance"><?= e(admin_balance_with_unit($row['user_balance'] ?? null)) ?></span></td>
                                 <td><?= e($row['agency']) ?></td>
                                 <td><?= e($row['sender']) ?></td>
                                 <td><?= e($row['receiver']) ?></td>
@@ -561,6 +586,7 @@ render_page_start('مدیریت حواله‌ها', 'remittances');
                                             <button class="btn-edit btn-sm" 
                                                     data-id="<?= e((string)$row['id']) ?>" 
                                                     data-mobile="<?= e((string)$row['mobile']) ?>" 
+                                                    data-user_balance="<?= e(admin_balance_with_unit($row['user_balance'] ?? null)) ?>"
                                                     data-agency="<?= e($row['agency']) ?>"
                                                     data-sender="<?= e($row['sender']) ?>" 
                                                     data-receiver="<?= e($row['receiver']) ?>"
@@ -613,6 +639,7 @@ render_page_start('مدیریت حواله‌ها', 'remittances');
             <form method="post" class="rm-form-grid">
                 <input type="hidden" name="csrf_token" value="<?= e($csrf) ?>">
                 <input type="hidden" name="action" value="create">
+                <input type="hidden" name="create_nonce" value="<?= e($remittanceCreateNonce) ?>">
                 
                 <div class="rm-field">
                     <label>شماره موبایل کاربر</label>
@@ -675,6 +702,7 @@ render_page_start('مدیریت حواله‌ها', 'remittances');
             <button class="btn-close-modal" onclick="closeModal('editRemittanceModal')">&times;</button>
         </div>
         <div class="rm-modal-body">
+            <div id="editRemittanceBalance" class="rm-balance-review">موجودی فعلی کاربر: —</div>
              <div class="active-rate-info">
                 نرخ ارز فعال (افغانی به تومان): <?= number_format($activeRate, 2) ?>
             </div>
@@ -794,6 +822,7 @@ render_page_start('مدیریت حواله‌ها', 'remittances');
     function prepareEditModal(btn) {
         document.getElementById('editRemittanceId').value = btn.dataset.id || '';
         document.getElementById('editRemittanceMobile').value = btn.dataset.mobile || '';
+        document.getElementById('editRemittanceBalance').textContent = 'موجودی فعلی کاربر: ' + (btn.dataset.user_balance || '—');
         document.getElementById('editRemittanceAgency').value = btn.dataset.agency || '';
         document.getElementById('editRemittanceSender').value = btn.dataset.sender || '';
         document.getElementById('editRemittanceReceiver').value = btn.dataset.receiver || '';

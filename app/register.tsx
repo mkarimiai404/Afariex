@@ -4,8 +4,9 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import { Stack, useRouter } from 'expo-router';
 
-import { fetchJson } from '@/lib/api';
+import { fetchJson, isApiResponseError } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
+import { PolicySection, RegistrationPolicyModal } from '@/components/registration-policy-modal';
 
 type RegisterStep = 'form' | 'otp' | 'success';
 
@@ -25,6 +26,8 @@ const codeMessage: Record<string, string> = {
   REGISTRATION_OTP_INVALID: 'تأیید ثبت‌نام معتبر نیست.',
   OTP_SEND_FAILED: 'ارسال کد تأیید در حال حاضر امکان‌پذیر نیست.',
   PIN_SYSTEM_UNAVAILABLE: 'ساخت حساب در حال حاضر امکان‌پذیر نیست.',
+  CONSENT_REQUIRED: 'برای ادامه ثبتنام، ابتدا قوانین و سیاست حفظ حریم خصوصی را مطالعه و تأیید کنید.',
+  CONSENT_STORAGE_UNAVAILABLE: 'ثبت‌نام در حال حاضر امکان‌پذیر نیست.',
 };
 
 const normalizeDigits = (value: string) => value.replace(/[۰-۹]/g, (digit) => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(digit)));
@@ -44,6 +47,17 @@ function readResponseCode(error: unknown): string {
   return typeof error === 'object' && error !== null && 'responseCode' in error ? String((error as { responseCode?: string }).responseCode || '') : '';
 }
 
+function requestErrorMessage(error: unknown): string {
+  if (isApiResponseError(error) && error.safeMessage) return error.safeMessage;
+  const kind = typeof error === 'object' && error !== null && 'responseKind' in error
+    ? String((error as { responseKind?: string }).responseKind || '')
+    : '';
+  if (kind === 'html') return 'پاسخ نامعتبر وب‌سرور یا سامانه امنیتی دریافت شد. لطفاً کمی بعد دوباره تلاش کنید.';
+  if (kind === 'timeout') return 'پاسخ سرویس پیامک بیش از حد طول کشید. لطفاً کمی بعد دوباره تلاش کنید.';
+  if (kind === 'invalid_json') return 'پاسخ سرور قابل پردازش نبود. لطفاً کمی بعد دوباره تلاش کنید.';
+  return 'ارتباط با سرور برقرار نشد. اتصال اینترنت را بررسی و دوباره تلاش کنید.';
+}
+
 export default function RegisterScreen() {
   const router = useRouter();
   const { signIn } = useAuth();
@@ -60,6 +74,9 @@ export default function RegisterScreen() {
   const [cooldown, setCooldown] = useState(0);
   const [error, setError] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [consentAccepted, setConsentAccepted] = useState(false);
+  const [policyVisible, setPolicyVisible] = useState(false);
+  const [policySection, setPolicySection] = useState<PolicySection>('terms');
 
   useEffect(() => {
     if (step !== 'otp' || cooldown <= 0) return undefined;
@@ -74,6 +91,7 @@ export default function RegisterScreen() {
   }, [step]);
 
   const validateForm = (): string | null => {
+    if (!consentAccepted) return 'برای ادامه ثبتنام، ابتدا قوانین و سیاست حفظ حریم خصوصی را مطالعه و تأیید کنید.';
     if (!fullName.trim()) return 'نام و نام خانوادگی را وارد کنید.';
     if (!normalizeIranMobile(mobile)) return 'شماره موبایل معتبر وارد کنید.';
     if (!password) return 'رمز عبور را وارد کنید.';
@@ -112,7 +130,7 @@ export default function RegisterScreen() {
         setError('کد قبلاً ارسال شده است؛ کد دریافتی را وارد کنید.');
         return;
       }
-      setError(codeMessage[responseCode] || 'ارسال کد تأیید در حال حاضر امکان‌پذیر نیست.');
+      setError(codeMessage[responseCode] || requestErrorMessage(requestError));
     } finally {
       setBusy(false);
     }
@@ -120,6 +138,10 @@ export default function RegisterScreen() {
 
   const completeRegistration = async () => {
     if (busy) return;
+    if (!consentAccepted) {
+      setError('برای ادامه ثبتنام، ابتدا قوانین و سیاست حفظ حریم خصوصی را مطالعه و تأیید کنید.');
+      return;
+    }
     const normalizedOtp = normalizeDigits(otp);
     if (!/^\d{6}$/.test(normalizedOtp)) {
       setError('کد تأیید ۶ رقمی را وارد کنید.');
@@ -153,6 +175,7 @@ export default function RegisterScreen() {
           password,
           ...(referralCode.trim() ? { referral_code: referralCode.trim() } : {}),
           registration_token: registrationToken,
+          consent: true,
         }),
       });
       const token = String(registration?.data?.api_token || '').trim();
@@ -212,6 +235,17 @@ export default function RegisterScreen() {
                     <View style={styles.fieldHeader}><Text style={styles.optional}>اختیاری</Text><Text style={styles.label}>کد معرف</Text></View>
                     <TextInput style={styles.input} value={referralCode} onChangeText={setReferralCode} placeholder="در صورت داشتن کد معرف" placeholderTextColor="#9aa8b5" autoCapitalize="characters" textAlign="right" />
                     <View style={styles.field}><Text style={styles.label}>رمز عبور</Text><View style={styles.passwordBox}><TextInput style={styles.passwordInput} value={password} onChangeText={setPassword} placeholder="رمز عبور خود را وارد کنید" placeholderTextColor="#9aa8b5" secureTextEntry={!showPassword} autoCapitalize="none" textAlign="right" /><TouchableOpacity accessibilityRole="button" accessibilityLabel={showPassword ? 'مخفی کردن رمز عبور' : 'نمایش رمز عبور'} onPress={() => setShowPassword((visible) => !visible)} style={styles.eye}><Ionicons name={showPassword ? 'eye-off-outline' : 'eye-outline'} size={21} color="#718096" /></TouchableOpacity></View></View>
+                    <View style={styles.consentRow}>
+                      <TouchableOpacity
+                        style={[styles.checkbox, consentAccepted && styles.checkboxChecked]}
+                        onPress={() => { setConsentAccepted((accepted) => !accepted); setError(''); }}
+                        accessibilityRole="checkbox"
+                        accessibilityState={{ checked: consentAccepted }}
+                        accessibilityLabel="پذیرش قوانین و سیاست حفظ حریم خصوصی">
+                        {consentAccepted && <Ionicons name="checkmark" size={17} color="#fff" />}
+                      </TouchableOpacity>
+                      <Text style={styles.consentText}>با <Text style={styles.policyLink} onPress={() => { setPolicySection('terms'); setPolicyVisible(true); }}>قوانین و شرایط استفاده</Text> و <Text style={styles.policyLink} onPress={() => { setPolicySection('privacy'); setPolicyVisible(true); }}>سیاست حفظ حریم خصوصی</Text> آفارایکس موافقم.</Text>
+                    </View>
                   </>
                 ) : (
                   <>
@@ -230,6 +264,12 @@ export default function RegisterScreen() {
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
+      <RegistrationPolicyModal
+        visible={policyVisible}
+        initialSection={policySection}
+        onBack={() => setPolicyVisible(false)}
+        onAccept={() => { setConsentAccepted(true); setError(''); setPolicyVisible(false); }}
+      />
     </SafeAreaView>
   );
 }
@@ -250,7 +290,7 @@ function Field({ label, value, onChangeText, placeholder, keyboardType, maxLengt
 }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: '#f5f8f9' }, flex: { flex: 1 }, page: { flexGrow: 1, padding: 20, justifyContent: 'center' }, shell: { width: '100%', maxWidth: 500, alignSelf: 'center' }, brandRow: { flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'center', marginBottom: 18, gap: 10 }, logo: { width: 44, height: 44, borderRadius: 13 }, brandText: { alignItems: 'flex-end' }, brandName: { fontFamily: 'VazirmatnBold', color: '#164354', fontSize: 21 }, brandCaption: { fontFamily: 'Vazirmatn', color: '#7b9198', fontSize: 10, marginTop: 1 }, card: { width: '100%', paddingVertical: 2 }, title: { fontFamily: 'VazirmatnBold', color: '#183b49', fontSize: 22, lineHeight: 34, textAlign: 'right' }, subtitle: { fontFamily: 'Vazirmatn', color: '#71838b', fontSize: 13, lineHeight: 23, textAlign: 'right', marginTop: 4, marginBottom: 13 }, field: { marginTop: 14 }, fieldHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 14, marginBottom: 7 }, label: { fontFamily: 'VazirmatnBold', color: '#334e5b', fontSize: 12, textAlign: 'right' }, optional: { fontFamily: 'Vazirmatn', color: '#8a9ba2', fontSize: 11 }, input: { width: '100%', minHeight: 49, borderWidth: 1, borderColor: '#dce7e9', borderRadius: 13, paddingHorizontal: 14, fontFamily: 'Vazirmatn', color: '#173b49', fontSize: 13, backgroundColor: '#fcfefe' }, passwordBox: { position: 'relative', justifyContent: 'center' }, passwordInput: { minHeight: 49, borderWidth: 1, borderColor: '#dce7e9', borderRadius: 13, paddingHorizontal: 46, fontFamily: 'Vazirmatn', color: '#173b49', fontSize: 13, backgroundColor: '#fcfefe' }, eye: { position: 'absolute', left: 12, height: '100%', width: 34, alignItems: 'center', justifyContent: 'center' }, error: { fontFamily: 'Vazirmatn', color: '#c24142', fontSize: 12, textAlign: 'right', lineHeight: 20, marginTop: 12 }, primaryButton: { minHeight: 52, borderRadius: 14, backgroundColor: '#0d9675', alignItems: 'center', justifyContent: 'center', flexDirection: 'row-reverse', gap: 8, marginTop: 20 }, buttonDisabled: { opacity: 0.72 }, buttonText: { fontFamily: 'VazirmatnBold', color: '#fff', fontSize: 14 }, loginLink: { alignItems: 'center', marginTop: 18 }, loginLinkText: { fontFamily: 'Vazirmatn', color: '#71838b', fontSize: 12 }, loginLinkStrong: { color: '#0d8c70', fontFamily: 'VazirmatnBold' }, otpNotice: { flexDirection: 'row-reverse', alignItems: 'center', gap: 8, backgroundColor: '#eefaf6', borderRadius: 12, padding: 12, marginTop: 4 }, otpNoticeText: { flex: 1, fontFamily: 'Vazirmatn', color: '#237467', fontSize: 12, textAlign: 'right' }, resendRow: { flexDirection: 'row-reverse', justifyContent: 'space-between', alignItems: 'center', marginTop: 14 }, cooldown: { fontFamily: 'Vazirmatn', color: '#82949b', fontSize: 11 }, resend: { fontFamily: 'VazirmatnBold', color: '#0d8f72', fontSize: 12 }, disabledText: { color: '#aab7ba' }, successIcon: { width: 58, height: 58, borderRadius: 29, backgroundColor: '#0d9675', alignSelf: 'center', alignItems: 'center', justifyContent: 'center', marginBottom: 14 }, successText: { fontFamily: 'Vazirmatn', color: '#667d86', fontSize: 13, lineHeight: 25, textAlign: 'right', marginTop: 10 }, pinCard: { marginTop: 18, borderRadius: 16, backgroundColor: '#f0faf7', borderWidth: 1, borderColor: '#cceee3', padding: 17, alignItems: 'center' }, pinLabel: { fontFamily: 'Vazirmatn', color: '#5b7e78', fontSize: 11 }, pinValue: { fontFamily: 'VazirmatnBold', color: '#135a54', fontSize: 30, letterSpacing: 8, marginTop: 5 }, pinWarning: { fontFamily: 'Vazirmatn', color: '#8a7770', fontSize: 10, textAlign: 'center', marginTop: 8 }, copyButton: { minHeight: 44, borderRadius: 12, borderWidth: 1, borderColor: '#bce5da', flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'center', gap: 7, marginTop: 13 }, copyText: { fontFamily: 'VazirmatnBold', color: '#0c8f70', fontSize: 12 },
+  safe: { flex: 1, backgroundColor: '#f5f8f9' }, flex: { flex: 1 }, page: { flexGrow: 1, padding: 20, justifyContent: 'center' }, shell: { width: '100%', maxWidth: 500, alignSelf: 'center' }, brandRow: { flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'center', marginBottom: 18, gap: 10 }, logo: { width: 44, height: 44, borderRadius: 13 }, brandText: { alignItems: 'flex-end' }, brandName: { fontFamily: 'VazirmatnBold', color: '#164354', fontSize: 21 }, brandCaption: { fontFamily: 'Vazirmatn', color: '#7b9198', fontSize: 10, marginTop: 1 }, card: { width: '100%', paddingVertical: 2 }, title: { fontFamily: 'VazirmatnBold', color: '#183b49', fontSize: 22, lineHeight: 34, textAlign: 'right' }, subtitle: { fontFamily: 'Vazirmatn', color: '#71838b', fontSize: 13, lineHeight: 23, textAlign: 'right', marginTop: 4, marginBottom: 13 }, field: { marginTop: 14 }, fieldHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 14, marginBottom: 7 }, label: { fontFamily: 'VazirmatnBold', color: '#334e5b', fontSize: 12, textAlign: 'right' }, optional: { fontFamily: 'Vazirmatn', color: '#8a9ba2', fontSize: 11 }, input: { width: '100%', minHeight: 49, borderWidth: 1, borderColor: '#dce7e9', borderRadius: 13, paddingHorizontal: 14, fontFamily: 'Vazirmatn', color: '#173b49', fontSize: 13, backgroundColor: '#fcfefe' }, passwordBox: { position: 'relative', justifyContent: 'center' }, passwordInput: { minHeight: 49, borderWidth: 1, borderColor: '#dce7e9', borderRadius: 13, paddingHorizontal: 46, fontFamily: 'Vazirmatn', color: '#173b49', fontSize: 13, backgroundColor: '#fcfefe' }, eye: { position: 'absolute', left: 12, height: '100%', width: 34, alignItems: 'center', justifyContent: 'center' }, consentRow: { flexDirection: 'row-reverse', alignItems: 'flex-start', gap: 10, marginTop: 16 }, checkbox: { width: 23, height: 23, borderRadius: 6, borderWidth: 1.5, borderColor: '#9aabb1', backgroundColor: '#fff', alignItems: 'center', justifyContent: 'center', marginTop: 1 }, checkboxChecked: { backgroundColor: '#0d9675', borderColor: '#0d9675' }, consentText: { flex: 1, fontFamily: 'Vazirmatn', color: '#526b75', fontSize: 11, lineHeight: 23, textAlign: 'right', writingDirection: 'rtl' }, policyLink: { fontFamily: 'VazirmatnBold', color: '#0d8c70', textDecorationLine: 'underline' }, error: { fontFamily: 'Vazirmatn', color: '#c24142', fontSize: 12, textAlign: 'right', lineHeight: 20, marginTop: 12 }, primaryButton: { minHeight: 52, borderRadius: 14, backgroundColor: '#0d9675', alignItems: 'center', justifyContent: 'center', flexDirection: 'row-reverse', gap: 8, marginTop: 20 }, buttonDisabled: { opacity: 0.72 }, buttonText: { fontFamily: 'VazirmatnBold', color: '#fff', fontSize: 14 }, loginLink: { alignItems: 'center', marginTop: 18 }, loginLinkText: { fontFamily: 'Vazirmatn', color: '#71838b', fontSize: 12 }, loginLinkStrong: { color: '#0d8c70', fontFamily: 'VazirmatnBold' }, otpNotice: { flexDirection: 'row-reverse', alignItems: 'center', gap: 8, backgroundColor: '#eefaf6', borderRadius: 12, padding: 12, marginTop: 4 }, otpNoticeText: { flex: 1, fontFamily: 'Vazirmatn', color: '#237467', fontSize: 12, textAlign: 'right' }, resendRow: { flexDirection: 'row-reverse', justifyContent: 'space-between', alignItems: 'center', marginTop: 14 }, cooldown: { fontFamily: 'Vazirmatn', color: '#82949b', fontSize: 11 }, resend: { fontFamily: 'VazirmatnBold', color: '#0d8f72', fontSize: 12 }, disabledText: { color: '#aab7ba' }, successIcon: { width: 58, height: 58, borderRadius: 29, backgroundColor: '#0d9675', alignSelf: 'center', alignItems: 'center', justifyContent: 'center', marginBottom: 14 }, successText: { fontFamily: 'Vazirmatn', color: '#667d86', fontSize: 13, lineHeight: 25, textAlign: 'right', marginTop: 10 }, pinCard: { marginTop: 18, borderRadius: 16, backgroundColor: '#f0faf7', borderWidth: 1, borderColor: '#cceee3', padding: 17, alignItems: 'center' }, pinLabel: { fontFamily: 'Vazirmatn', color: '#5b7e78', fontSize: 11 }, pinValue: { fontFamily: 'VazirmatnBold', color: '#135a54', fontSize: 30, letterSpacing: 8, marginTop: 5 }, pinWarning: { fontFamily: 'Vazirmatn', color: '#8a7770', fontSize: 10, textAlign: 'center', marginTop: 8 }, copyButton: { minHeight: 44, borderRadius: 12, borderWidth: 1, borderColor: '#bce5da', flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'center', gap: 7, marginTop: 13 }, copyText: { fontFamily: 'VazirmatnBold', color: '#0c8f70', fontSize: 12 },
 });
 
 Object.assign(styles as Record<string, unknown>, {

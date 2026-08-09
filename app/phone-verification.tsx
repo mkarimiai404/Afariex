@@ -13,6 +13,17 @@ const maskMobile = (mobile: string | null) => {
   return `${value.slice(0, 3)}${'*'.repeat(Math.max(2, value.length - 5))}${value.slice(-2)}`;
 };
 
+const apiErrorMessage = (error: unknown) => {
+  if (isApiResponseError(error) && error.safeMessage) return error.safeMessage;
+  const kind = typeof error === 'object' && error !== null && 'responseKind' in error
+    ? String((error as { responseKind?: string }).responseKind || '')
+    : '';
+  if (kind === 'html') return 'پاسخ نامعتبر وب‌سرور یا سامانه امنیتی دریافت شد. لطفاً کمی بعد دوباره تلاش کنید.';
+  if (kind === 'timeout') return 'پاسخ سرویس پیامک بیش از حد طول کشید. لطفاً کمی بعد دوباره تلاش کنید.';
+  if (kind === 'invalid_json') return 'پاسخ سرور قابل پردازش نبود. لطفاً کمی بعد دوباره تلاش کنید.';
+  return 'ارتباط با سرور برقرار نشد. اتصال اینترنت را بررسی و دوباره تلاش کنید.';
+};
+
 export default function PhoneVerificationScreen() {
   const router = useRouter();
   const { userId, userToken, userMobile, isAuthenticated, isInitialized } = useAuth();
@@ -64,12 +75,12 @@ export default function PhoneVerificationScreen() {
       setCooldown(60);
       setDevelopmentCode(data?.data?.development_code || null);
     } catch (error) {
-      showError(
-        'خطا',
-        isApiResponseError(error) && error.safeMessage
-          ? error.safeMessage
-          : 'ارتباط با سرور برقرار نشد.'
-      );
+      if (isApiResponseError(error) && error.responseCode === 'OTP_COOLDOWN') {
+        const response = error.responseData as { data?: { resend_after?: number } } | null;
+        setSent(true);
+        setCooldown(Math.max(0, Number(response?.data?.resend_after || 0)));
+      }
+      showError('خطا', apiErrorMessage(error));
     } finally {
       setRequesting(false);
     }
@@ -94,12 +105,7 @@ export default function PhoneVerificationScreen() {
       showSuccess('تأیید موفق', 'شماره موبایل با موفقیت تأیید شد.');
       router.back();
     } catch (error) {
-      showError(
-        'خطا',
-        isApiResponseError(error) && error.safeMessage
-          ? error.safeMessage
-          : 'ارتباط با سرور برقرار نشد.'
-      );
+      showError('خطا', apiErrorMessage(error));
     } finally {
       setVerifying(false);
     }

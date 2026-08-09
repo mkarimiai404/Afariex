@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/layout.php';
+require_once __DIR__ . '/balance_view_helpers.php';
 
 require_login();
 require_permission('view');
@@ -73,7 +74,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         db()->beginTransaction();
 
         try {
-            $currentStmt = db()->prepare("SELECT user_id, amount, status FROM transactions WHERE id = ? FOR UPDATE");
+            $currentStmt = db()->prepare("SELECT user_id, amount, status FROM transactions WHERE id = ? AND type = 'deposit' FOR UPDATE");
             $currentStmt->execute([$id]);
             $transaction = $currentStmt->fetch();
 
@@ -238,7 +239,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 $q = trim((string)($_GET['q'] ?? ''));
 $statusFilter = trim((string)($_GET['status'] ?? ''));
-$typeFilter = trim((string)($_GET['type'] ?? 'deposit'));
+$typeFilter = 'deposit';
 $startDate = trim((string)($_GET['start_date'] ?? ''));
 $endDate = trim((string)($_GET['end_date'] ?? ''));
 $exportExcel = (string)($_GET['export'] ?? '') === 'excel';
@@ -250,10 +251,8 @@ $offset = ($page - 1) * $perPage;
 $where = [];
 $params = [];
 
-if ($typeFilter !== '') {
-    $where[] = "t.type = ?";
-    $params[] = $typeFilter;
-}
+$where[] = "t.type = ?";
+$params[] = $typeFilter;
 
 if ($statusFilter !== '') {
     $where[] = "t.status = ?";
@@ -299,7 +298,7 @@ if ($page > $totalPages) {
 $limit = (int)$perPage;
 $offset = (int)$offset;
 $listSql = "
-    SELECT t.id, t.user_id, t.amount, t.tracking_code, t.type, t.status, t.receipt_image, t.created_at, t.description, u.mobile as user_mobile
+    SELECT t.id, t.user_id, t.amount, t.tracking_code, t.type, t.status, t.receipt_image, t.created_at, t.description, u.mobile as user_mobile, u.balance AS user_balance
     FROM transactions t
     LEFT JOIN users u ON t.user_id = u.id
     {$whereSql}
@@ -316,7 +315,7 @@ $totalAmount = (float)$sumStmt->fetchColumn();
 
 if ($exportExcel) {
     $exportStmt = db()->prepare("
-        SELECT t.id, t.user_id, t.amount, t.tracking_code, t.type, t.status, t.receipt_image, t.created_at, t.description, u.mobile as user_mobile
+        SELECT t.id, t.user_id, t.amount, t.tracking_code, t.type, t.status, t.receipt_image, t.created_at, t.description, u.mobile as user_mobile, u.balance AS user_balance
         FROM transactions t
         LEFT JOIN users u ON t.user_id = u.id
         {$whereSql}
@@ -329,6 +328,7 @@ if ($exportExcel) {
             '#' . (string)$row['id'],
             trim((string)($row['receipt_image'] ?? '')) !== '' ? (string)$row['receipt_image'] : 'بدون عکس',
             (string)($row['user_mobile'] ?? 'نامشخص'),
+            admin_balance_with_unit($row['user_balance'] ?? null),
             (string)$row['amount'],
             (string)($row['tracking_code'] ?? ''),
             (string)($row['type'] === 'withdraw' ? 'برداشت' : 'واریز'),
@@ -340,14 +340,14 @@ if ($exportExcel) {
 
     export_xls_table(
         'Transactions_Report_' . date('Ymd_His') . '.xls',
-        ['شناسه', 'تصویر', 'کاربر (موبایل)', 'مبلغ', 'کد رهگیری', 'نوع', 'وضعیت', 'توضیحات', 'تاریخ ثبت'],
+        ['شناسه', 'تصویر', 'کاربر (موبایل)', 'موجودی فعلی کاربر', 'مبلغ فیش', 'کد رهگیری', 'نوع', 'وضعیت', 'توضیحات', 'تاریخ ثبت'],
         $exportRows
     );
 }
 
 if ($exportPrint) {
     $printStmt = db()->prepare("
-        SELECT t.id, t.user_id, t.amount, t.tracking_code, t.type, t.status, t.receipt_image, t.created_at, t.description, u.mobile as user_mobile
+        SELECT t.id, t.user_id, t.amount, t.tracking_code, t.type, t.status, t.receipt_image, t.created_at, t.description, u.mobile as user_mobile, u.balance AS user_balance
         FROM transactions t
         LEFT JOIN users u ON t.user_id = u.id
         {$whereSql}
@@ -360,6 +360,7 @@ if ($exportPrint) {
             '#' . (string)$row['id'],
             trim((string)($row['receipt_image'] ?? '')) !== '' ? 'تصویر موجود' : 'بدون عکس',
             (string)($row['user_mobile'] ?? 'نامشخص'),
+            admin_balance_with_unit($row['user_balance'] ?? null),
             (string)$row['amount'],
             (string)($row['tracking_code'] ?? ''),
             (string)($row['type'] === 'withdraw' ? 'برداشت' : 'واریز'),
@@ -371,7 +372,7 @@ if ($exportPrint) {
 
     render_print_table_view(
         'گزارش فیش‌های واریزی',
-        ['شناسه', 'تصویر', 'کاربر (موبایل)', 'مبلغ', 'کد رهگیری', 'نوع', 'وضعیت', 'توضیحات', 'تاریخ ثبت'],
+        ['شناسه', 'تصویر', 'کاربر (موبایل)', 'موجودی فعلی کاربر', 'مبلغ فیش', 'کد رهگیری', 'نوع', 'وضعیت', 'توضیحات', 'تاریخ ثبت'],
         $printRows,
         'فیلتر بازه تاریخ اعمال شده است.'
     );
@@ -715,6 +716,7 @@ render_page_start('فیش های واریزی', 'receipts');
         direction: ltr;
         white-space: nowrap;
     }
+    .receipt-current-balance { display:inline-flex;padding:7px 10px;border-radius:10px;background:#ecfdf5;color:#047857;border:1px solid #a7f3d0;font-weight:800;white-space:nowrap;direction:rtl; }
 
     .receipt-code {
         display: inline-flex;
@@ -1468,6 +1470,7 @@ render_page_start('فیش های واریزی', 'receipts');
                         <th style="width:70px;">شناسه</th>
                         <th style="width:90px;">تصویر</th>
                         <th>کاربر (موبایل)</th>
+                        <th>موجودی فعلی کاربر</th>
                         <th>مبلغ</th>
                         <th>کد رهگیری</th>
                         <th>نوع</th>
@@ -1479,6 +1482,7 @@ render_page_start('فیش های واریزی', 'receipts');
 
                     <tr class="receipt-filter-row">
                         <form method="get" class="receipt-filter-form">
+                            <td></td>
                             <td></td>
                             <td></td>
                             <td></td>
@@ -1495,9 +1499,7 @@ render_page_start('فیش های واریزی', 'receipts');
 
                             <td>
                                 <select name="type" class="receipt-filter-control">
-                                    <option value="">همه نوع‌ها</option>
                                     <option value="deposit" <?= $typeFilter === 'deposit' ? 'selected' : '' ?>>deposit</option>
-                                    <option value="withdraw" <?= $typeFilter === 'withdraw' ? 'selected' : '' ?>>withdraw</option>
                                 </select>
                             </td>
 
@@ -1527,7 +1529,7 @@ render_page_start('فیش های واریزی', 'receipts');
                 <tbody>
                     <?php if (!$receipts): ?>
                         <tr>
-                            <td colspan="10" class="receipt-empty">
+                            <td colspan="11" class="receipt-empty">
                                 هیچ فیشی برای نمایش وجود ندارد.
                             </td>
                         </tr>
@@ -1569,6 +1571,8 @@ render_page_start('فیش های واریزی', 'receipts');
                                 <td>
                                     <span class="receipt-mobile"><?= e((string)($row['user_mobile'] ?? 'نامشخص')) ?></span>
                                 </td>
+
+                                <td><span class="receipt-current-balance"><?= e(admin_balance_with_unit($row['user_balance'] ?? null)) ?></span></td>
 
                                 <td>
                                     <span class="receipt-amount">

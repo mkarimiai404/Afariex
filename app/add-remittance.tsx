@@ -1,6 +1,5 @@
 ﻿import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Picker } from '@react-native-picker/picker';
 import * as Print from 'expo-print';
 import { Stack, useRouter } from 'expo-router';
@@ -24,6 +23,9 @@ import { useAuth } from '@/lib/auth-context';
 import { apiUrl } from '@/lib/api';
 import { showError, showSuccess } from '@/lib/toast';
 import { AppBottomNav } from '@/components/app-bottom-nav';
+import { RemittanceReceiptView } from '@/components/remittance-receipt-view';
+import { customerTrackingNumber, RemittanceReceiptModel } from '@/lib/remittance-receipt';
+import { createRemittanceReceiptPdf } from '@/lib/remittance-receipt-native';
 
 type Agency = {
   id: string | number;
@@ -41,11 +43,6 @@ const toPersianNum = (num: string | number) => {
   if (!num && num !== 0) return '۰';
   const farsiDigits = ['۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹'];
   return num.toString().replace(/\d/g, (x) => farsiDigits[parseInt(x)]);
-};
-
-const toPersianCommaNumber = (value: number | string) => {
-  const numericValue = Number(value) || 0;
-  return toPersianNum(numericValue.toLocaleString('en-US'));
 };
 
 const normalizeAmountInput = (value: string) => {
@@ -90,15 +87,17 @@ export default function AddRemittanceScreen() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [resolvedUserId, setResolvedUserId] = useState<string>('');
-  const [resolvedApiToken, setResolvedApiToken] = useState<string>('');
+  const resolvedUserId = userId?.trim() || '';
+  const resolvedApiToken = userToken?.trim() || '';
   const loadInFlight = useRef(false);
   
   const [successModalVisible, setSuccessModalVisible] = useState(false);
+  const [receiptModalVisible, setReceiptModalVisible] = useState(false);
   const [insufficientBalanceVisible, setInsufficientBalanceVisible] = useState(false);
   const [completedRemittanceId, setCompletedRemittanceId] = useState<string | null>(null);
+  const [completedReceipt, setCompletedReceipt] = useState<RemittanceReceiptModel | null>(null);
+  const [receiptBusyAction, setReceiptBusyAction] = useState<'pdf' | 'share' | null>(null);
   const [lastTrackingCode, setLastTrackingCode] = useState<string>('');
-  const [lastAgencyAddress, setLastAgencyAddress] = useState<string>('');
   const [lastAgencyName, setLastAgencyName] = useState<string>('');
 
   const selectedRate = useMemo(
@@ -121,28 +120,6 @@ export default function AddRemittanceScreen() {
     const fallbackName = userName?.trim() || userMobile?.trim() || '';
     setSenderName(fallbackName);
   }, [userName, userMobile]);
-
-  useEffect(() => {
-    const resolveAuthPayload = async () => {
-      try {
-        let finalUserId = userId?.trim() || '';
-        let finalApiToken = userToken?.trim() || '';
-
-        if (!finalUserId || !finalApiToken) {
-          const storedUserId = await AsyncStorage.getItem('user_id') || await AsyncStorage.getItem('userId');
-          const storedToken = await AsyncStorage.getItem('api_token') || await AsyncStorage.getItem('userToken');
-          if (!finalUserId) finalUserId = storedUserId?.trim() || '';
-          if (!finalApiToken) finalApiToken = storedToken?.trim() || '';
-        }
-
-        setResolvedUserId(finalUserId);
-        setResolvedApiToken(finalApiToken);
-      } catch (err) {
-        console.error('Auth Resolve Error:', err);
-      }
-    };
-    resolveAuthPayload();
-  }, [isInitialized, userId, userToken]);
 
   const fetchData = useCallback(async () => {
     if (!isInitialized || loadInFlight.current) return;
@@ -200,47 +177,33 @@ export default function AddRemittanceScreen() {
     setAmountAfghani(Number.isFinite(calculated) ? calculated.toFixed(0) : '');
   }, [amountToman, selectedRate]);
 
-  const handleSavePdf = async () => {
+  const handleDownloadPdf = async () => {
+    if (!completedReceipt || receiptBusyAction) return;
+    setReceiptBusyAction('pdf');
     try {
-      const numericAmount = Number(amountToman || 0);
-      const formattedAmount = toPersianCommaNumber(numericAmount);
-      const jalaliDate = getJalaliDate();
-      const destinationAddress = lastAgencyAddress || 'آدرس ثبت نشده';
+      const { uri } = await createRemittanceReceiptPdf(completedReceipt);
+      await Print.printAsync({ uri });
+    } catch {
+      showError('خطا', 'ساخت یا دریافت PDF انجام نشد.');
+    } finally {
+      setReceiptBusyAction(null);
+    }
+  };
 
-      const html = `
-      <html dir="rtl" lang="fa">
-        <head>
-          <meta charset="utf-8" />
-          <style>
-            body { direction: rtl; font-family: Tahoma, Arial, sans-serif; color: #0f172a; padding: 20px; }
-            .card { border: 2px solid #0ed874; border-radius: 16px; padding: 20px; text-align: right; }
-            .brand { text-align: center; font-size: 24px; font-weight: bold; color: #0ed874; margin-bottom: 10px; }
-            .title { text-align: center; font-size: 18px; margin-bottom: 20px; }
-            .line { font-size: 16px; margin: 10px 0; border-bottom: 1px solid #eee; padding-bottom: 5px; }
-            .amount { font-weight: bold; color: #0ed874; font-size: 18px; }
-          </style>
-        </head>
-        <body>
-          <div class="card">
-            <div class="brand">صرافی آفارایکس</div>
-            <div class="title">✅ رسید ثبت حواله - کد: ${toPersianNum(lastTrackingCode)}</div>
-            <div class="line">تاریخ: ${jalaliDate}</div>
-            <div class="line">فرستنده: ${senderName || '-'}</div>
-            <div class="line">گیرنده: ${receiverName || '-'}</div>
-            <div class="line">مبلغ: <span class="amount">${formattedAmount} تومان</span></div>
-            <div class="line">مقصد: ${destinationAddress}</div>
-          </div>
-        </body>
-      </html>`;
-
-      const { uri } = await Print.printToFileAsync({ html });
-      if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(uri);
-      } else {
-        showSuccess('PDF آماده شد', uri);
+  const handleShareReceipt = async () => {
+    if (!completedReceipt || receiptBusyAction) return;
+    setReceiptBusyAction('share');
+    try {
+      if (!(await Sharing.isAvailableAsync())) {
+        showError('اشتراک‌گذاری', 'اشتراک‌گذاری در این دستگاه پشتیبانی نمی‌شود.');
+        return;
       }
-    } catch (err) {
-      showError('خطا', 'ساخت PDF ناموفق بود.');
+      const { uri } = await createRemittanceReceiptPdf(completedReceipt);
+      await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: 'اشتراک‌گذاری رسید حواله' });
+    } catch {
+      showError('خطا', 'اشتراک‌گذاری رسید انجام نشد.');
+    } finally {
+      setReceiptBusyAction(null);
     }
   };
 
@@ -265,8 +228,7 @@ export default function AddRemittanceScreen() {
       
       // کلیدهای زیر دقیقاً با فایل بک‌اند همگام شده‌اند
       payload.append('user_id', resolvedUserId);
-      const submissionToken = userToken?.trim() || resolvedApiToken.trim();
-      if (submissionToken) payload.append('api_token', submissionToken);
+      if (resolvedApiToken) payload.append('api_token', resolvedApiToken);
       payload.append('agency', selectedAgency.name);
       payload.append('sender_name', senderName.trim());
       payload.append('receiver_name', receiverName.trim());
@@ -330,8 +292,16 @@ export default function AddRemittanceScreen() {
         }
         setCompletedRemittanceId(committedRemittanceId);
         setLastTrackingCode(committedRemittanceId);
-        setLastAgencyAddress(selectedAgency?.address || 'آدرس ثبت نشده');
         setLastAgencyName(selectedAgency?.name || '');
+        setCompletedReceipt({
+          trackingNumber: committedRemittanceId,
+          date: getJalaliDate(),
+          sender: senderName.trim(),
+          receiver: receiverName.trim(),
+          amountAfghani: amountAfghani.trim(),
+          destination: selectedAgency?.address?.trim() || selectedAgency?.name || '',
+          status: 'pending',
+        });
         const newBalance =
           result?.new_balance ??
           result?.data?.new_balance ??
@@ -524,13 +494,13 @@ export default function AddRemittanceScreen() {
           <View style={styles.modalCard}>
             <Ionicons name="checkmark-circle" size={60} color="#0ed874" style={{ alignSelf: 'center', marginBottom: 10 }} />
             <Text style={styles.modalTitle}>حواله با موفقیت ثبت شد</Text>
-            <Text style={styles.modalLine}>کد پیگیری: <Text style={styles.modalCode}>{toPersianNum(lastTrackingCode)}</Text></Text>
+            <Text style={styles.modalLine}>کد پیگیری: <Text style={styles.modalCode}>{toPersianNum(customerTrackingNumber(lastTrackingCode))}</Text></Text>
             <Text style={styles.modalLine}>نمایندگی: {lastAgencyName}</Text>
             
             <View style={styles.modalActions}>
-              <TouchableOpacity style={[styles.modalBtn, styles.pdfBtn]} onPress={handleSavePdf}>
+              <TouchableOpacity style={[styles.modalBtn, styles.pdfBtn]} onPress={() => { setSuccessModalVisible(false); setReceiptModalVisible(true); }}>
                 <Ionicons name="document-text-outline" size={20} color="#fff" style={{ marginLeft: 8 }} />
-                <Text style={styles.modalBtnText}>ذخیره رسید PDF</Text>
+                <Text style={styles.modalBtnText}>مشاهده رسید</Text>
               </TouchableOpacity>
               
               <TouchableOpacity
@@ -546,12 +516,46 @@ export default function AddRemittanceScreen() {
           </View>
         </View>
       </Modal>
+
+      <Modal
+        visible={receiptModalVisible}
+        animationType="slide"
+        onRequestClose={() => setReceiptModalVisible(false)}>
+        <SafeAreaView style={styles.receiptScreen}>
+          <View style={styles.receiptHeader}>
+            <TouchableOpacity style={styles.receiptHeaderBack} onPress={() => setReceiptModalVisible(false)}><Ionicons name="arrow-forward" size={22} color="#334155" /></TouchableOpacity>
+            <Text style={styles.receiptHeaderTitle}>رسید حواله</Text><View style={{ width: 42 }} />
+          </View>
+          <ScrollView contentContainerStyle={styles.receiptContent} showsVerticalScrollIndicator={false}>
+            {completedReceipt && <RemittanceReceiptView receipt={completedReceipt} />}
+            <View style={styles.receiptActions}>
+              <TouchableOpacity style={[styles.receiptAction, styles.receiptPrimary]} onPress={handleDownloadPdf} disabled={receiptBusyAction !== null}>
+                {receiptBusyAction === 'pdf' ? <ActivityIndicator color="#fff" /> : <><Ionicons name="download-outline" size={20} color="#fff" /><Text style={styles.receiptPrimaryText}>دریافت PDF</Text></>}
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.receiptAction, styles.receiptSecondary]} onPress={handleShareReceipt} disabled={receiptBusyAction !== null}>
+                {receiptBusyAction === 'share' ? <ActivityIndicator color="#0b8f72" /> : <><Ionicons name="share-social-outline" size={20} color="#0b8f72" /><Text style={styles.receiptSecondaryText}>اشتراک‌گذاری رسید</Text></>}
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.receiptAction, styles.receiptBack]} onPress={() => setReceiptModalVisible(false)} disabled={receiptBusyAction !== null}><Text style={styles.receiptBackText}>بازگشت</Text></TouchableOpacity>
+            </View>
+          </ScrollView>
+        </SafeAreaView>
+      </Modal>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: '#ffffff' },
+  receiptScreen: { flex: 1, backgroundColor: '#f4f7f8' },
+  receiptHeader: { height: 62, paddingHorizontal: 16, flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'space-between' },
+  receiptHeaderBack: { width: 42, height: 42, borderRadius: 13, backgroundColor: '#fff', borderWidth: 1, borderColor: '#e2e8f0', alignItems: 'center', justifyContent: 'center' },
+  receiptHeaderTitle: { fontFamily: 'VazirmatnBold', fontSize: 18, color: '#17324d' },
+  receiptContent: { width: '100%', maxWidth: 720, alignSelf: 'center', padding: 16, paddingBottom: 36 },
+  receiptActions: { gap: 10, marginTop: 16 },
+  receiptAction: { minHeight: 50, borderRadius: 13, flexDirection: 'row-reverse', gap: 8, alignItems: 'center', justifyContent: 'center' },
+  receiptPrimary: { backgroundColor: '#0b8f72' }, receiptPrimaryText: { fontFamily: 'VazirmatnBold', fontSize: 13, color: '#fff' },
+  receiptSecondary: { backgroundColor: '#ecfdf5', borderWidth: 1, borderColor: '#99f6e4' }, receiptSecondaryText: { fontFamily: 'VazirmatnBold', fontSize: 13, color: '#0b8f72' },
+  receiptBack: { backgroundColor: '#fff', borderWidth: 1, borderColor: '#e2e8f0' }, receiptBackText: { fontFamily: 'Vazirmatn', fontSize: 13, color: '#475569' },
   outerBackground: { flex: 1, backgroundColor: '#ffffff', paddingHorizontal: 18, paddingTop: 18, paddingBottom: 70 },
   boxedContainer: { 
     flex: 1, 

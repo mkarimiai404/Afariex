@@ -11,7 +11,9 @@ function render_page_start(string $title, string $activePage, bool $showSidebar 
         'rates' => ['label' => 'نرخ ارز', 'href' => 'exchange_rates.php'],
         'remittances' => ['label' => 'حواله‌ها', 'href' => 'remittances.php'],
         'receipts' => ['label' => 'فیش‌های واریزی', 'href' => 'receipts.php'],
+        'withdrawals' => ['label' => 'برداشت‌ها', 'href' => 'withdrawals.php'],
         'users' => ['label' => 'کاربران', 'href' => 'users.php'],
+        'verifications' => ['label' => 'احراز هویت', 'href' => 'verifications.php'],
         'logs' => ['label' => 'گزارش فعالیت', 'href' => 'activity_logs.php'],
     ];
     ?>

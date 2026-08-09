@@ -11,10 +11,75 @@ if (session_status() === PHP_SESSION_NONE) {
 
 date_default_timezone_set('Asia/Tehran');
 
-const DB_HOST = 'localhost'; // اگر وصل نشد، این را به localhost تغییر دهید
-const DB_NAME = 'ariansh6_afariex';
-const DB_USER = 'ariansh6_afariex';
-const DB_PASS = 'As&01015910';
+// Load ignored server-side settings without exposing them to Expo or browser code.
+$projectRoot = dirname(__DIR__);
+$serverName = strtolower((string)($_SERVER['SERVER_NAME'] ?? ''));
+$declaredEnvironment = strtolower(trim((string)(getenv('AFARIEX_ENV') ?: getenv('APP_ENV') ?: '')));
+$isLocalEnvironment = $declaredEnvironment === 'local'
+    || ($declaredEnvironment !== 'production' && (
+        in_array($serverName, ['localhost', '127.0.0.1'], true)
+        || PHP_OS_FAMILY === 'Windows'
+    ));
+
+if (!$isLocalEnvironment) {
+    ini_set('display_errors', '0');
+    ini_set('display_startup_errors', '0');
+}
+
+$loadEnvFile = static function (string $path, bool $overwrite = false): void {
+    if (!is_file($path) || !is_readable($path)) return;
+    foreach (file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [] as $line) {
+        $line = trim($line);
+        if ($line === '' || str_starts_with($line, '#') || !str_contains($line, '=')) continue;
+        [$name, $value] = array_map('trim', explode('=', $line, 2));
+        if (preg_match('/^[A-Z][A-Z0-9_]*$/', $name) === 1 && ($overwrite || getenv($name) === false)) {
+            putenv($name . '=' . trim($value, " \t\"'"));
+        }
+    }
+};
+
+$loadEnvFile($projectRoot . DIRECTORY_SEPARATOR . '.env.local');
+if (!$isLocalEnvironment) {
+    $loadEnvFile(__DIR__ . DIRECTORY_SEPARATOR . '.env.production.local', true);
+}
+
+$configValue = static function (array $names, string $fallback = ''): string {
+    foreach ($names as $name) {
+        $value = getenv($name);
+        if ($value !== false && trim($value) !== '') return trim($value);
+    }
+    return $fallback;
+};
+
+define('DB_HOST', $configValue(['DB_HOST', 'AFARIEX_DB_HOST'], 'localhost'));
+define('DB_NAME', $configValue(['DB_NAME', 'AFARIEX_DB_NAME'], $isLocalEnvironment ? 'afariex_db' : ''));
+define('DB_USER', $configValue(['DB_USER', 'AFARIEX_DB_USER'], $isLocalEnvironment ? 'root' : ''));
+define('DB_PASS', $configValue(['DB_PASS', 'AFARIEX_DB_PASS'], $isLocalEnvironment ? '' : ''));
+
+if (!$isLocalEnvironment && (DB_NAME === '' || DB_USER === '' || DB_PASS === '')) {
+    throw new RuntimeException('Production database configuration is incomplete.');
+}
+const INITIAL_WITHDRAWAL_LIMIT_TOMAN = 5000000;
+const SILVER_DAILY_LIMIT_TOMAN = 100000000;
+
+function verification_level_definitions(): array
+{
+    $goldLimit = trim((string)getenv('GOLD_DAILY_LIMIT_TOMAN'));
+    return [
+        'bronze' => ['title' => 'برنزی', 'daily_limit' => INITIAL_WITHDRAWAL_LIMIT_TOMAN, 'next' => 'silver', 'documents' => ['identity_document', 'selfie']],
+        'silver' => ['title' => 'نقره‌ای', 'daily_limit' => SILVER_DAILY_LIMIT_TOMAN, 'next' => 'gold', 'documents' => ['video']],
+        'gold' => ['title' => 'طلایی', 'daily_limit' => $goldLimit !== '' && is_numeric($goldLimit) && (float)$goldLimit > 0 ? (float)$goldLimit : null, 'next' => null, 'documents' => []],
+    ];
+}
+
+function normalize_verification_level(string $level): string
+{
+    return match (strtolower(trim($level))) {
+        'gold' => 'gold',
+        'silver', 'verified' => 'silver',
+        default => 'bronze',
+    };
+}
 
 function db(): PDO
 {
@@ -31,6 +96,142 @@ function db(): PDO
     ]);
 
     return $pdo;
+}
+
+function ensure_verification_schema(): void
+{
+    static $ready = false;
+    if ($ready) return;
+
+    db()->exec('
+        CREATE TABLE IF NOT EXISTS user_verification_levels (
+            user_id INT NOT NULL PRIMARY KEY,
+            level VARCHAR(32) NOT NULL DEFAULT \'initial\',
+            phone_verified TINYINT(1) NOT NULL DEFAULT 0,
+            phone_verified_at DATETIME NULL,
+            withdrawal_limit DECIMAL(20,2) NULL,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    ');
+    db()->exec('
+        CREATE TABLE IF NOT EXISTS verification_upgrade_requests (
+            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            user_id INT NOT NULL,
+            request_type VARCHAR(16) NOT NULL DEFAULT \'silver\',
+            requested_level VARCHAR(32) NOT NULL DEFAULT \'verified\',
+            status ENUM(\'pending\', \'approved\', \'rejected\') NOT NULL DEFAULT \'pending\',
+            identity_document_path VARCHAR(255) NULL,
+            selfie_path VARCHAR(255) NULL,
+            video_path VARCHAR(255) NULL,
+            admin_id INT NULL,
+            admin_note TEXT NULL,
+            rejection_reason TEXT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            reviewed_at DATETIME NULL,
+            INDEX idx_upgrade_user_status (user_id, status)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    ');
+    $requestColumns = db()->query('SHOW COLUMNS FROM verification_upgrade_requests')->fetchAll(PDO::FETCH_COLUMN, 0);
+    $requestAdds = [
+        'request_type' => "ALTER TABLE verification_upgrade_requests ADD request_type VARCHAR(16) NOT NULL DEFAULT 'silver' AFTER user_id",
+        'identity_document_path' => 'ALTER TABLE verification_upgrade_requests ADD identity_document_path VARCHAR(255) NULL AFTER status',
+        'selfie_path' => 'ALTER TABLE verification_upgrade_requests ADD selfie_path VARCHAR(255) NULL AFTER identity_document_path',
+        'video_path' => 'ALTER TABLE verification_upgrade_requests ADD video_path VARCHAR(255) NULL AFTER selfie_path',
+        'rejection_reason' => 'ALTER TABLE verification_upgrade_requests ADD rejection_reason TEXT NULL AFTER admin_note',
+    ];
+    foreach ($requestAdds as $column => $sql) {
+        if (!in_array($column, $requestColumns, true)) db()->exec($sql);
+    }
+    $verificationColumns = db()->query('SHOW COLUMNS FROM user_verification_levels')->fetchAll(PDO::FETCH_COLUMN, 0);
+    if (!in_array('phone_verified_at', $verificationColumns, true)) {
+        db()->exec('ALTER TABLE user_verification_levels ADD phone_verified_at DATETIME NULL AFTER phone_verified');
+    }
+    db()->exec('
+        CREATE TABLE IF NOT EXISTS phone_verification_codes (
+            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            user_id INT NOT NULL,
+            mobile VARCHAR(32) NOT NULL,
+            code_hash VARCHAR(255) NOT NULL,
+            attempts TINYINT UNSIGNED NOT NULL DEFAULT 0,
+            expires_at DATETIME NOT NULL,
+            used_at DATETIME NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_phone_code_user (user_id, created_at),
+            INDEX idx_phone_code_expiry (expires_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    ');
+    $ready = true;
+}
+
+function verification_state(int $userId, bool $forUpdate = false): array
+{
+    ensure_verification_schema();
+    $sql = 'SELECT level, phone_verified, phone_verified_at, withdrawal_limit FROM user_verification_levels WHERE user_id = ?';
+    if ($forUpdate) $sql .= ' FOR UPDATE';
+    $stmt = db()->prepare($sql);
+    $stmt->execute([$userId]);
+    $row = $stmt->fetch() ?: [];
+    $level = normalize_verification_level((string)($row['level'] ?? 'bronze'));
+    $definitions = verification_level_definitions();
+    $definition = $definitions[$level];
+    $emailVerified = false;
+    $userColumns = db()->query('SHOW COLUMNS FROM users')->fetchAll(PDO::FETCH_COLUMN, 0);
+    if (in_array('email_verified', $userColumns, true)) {
+        $emailStmt = db()->prepare('SELECT email_verified FROM users WHERE id = ?');
+        $emailStmt->execute([$userId]);
+        $emailVerified = !empty($emailStmt->fetchColumn());
+    } elseif (in_array('email_verified_at', $userColumns, true)) {
+        $emailStmt = db()->prepare('SELECT email_verified_at FROM users WHERE id = ?');
+        $emailStmt->execute([$userId]);
+        $emailVerified = !empty($emailStmt->fetchColumn());
+    }
+    return [
+        'level' => $level,
+        'level_title' => $definition['title'],
+        // The explicit flag is authoritative. Older verified rows may not have a timestamp.
+        'phone_verified' => !empty($row['phone_verified']),
+        'phone_verified_at' => $row['phone_verified_at'] ?? null,
+        'email_verified' => $emailVerified,
+        'bronze_eligible' => !empty($row['phone_verified']) || $emailVerified,
+        'daily_limit' => $definition['daily_limit'],
+        'withdrawal_limit' => $definition['daily_limit'],
+        'next_level' => $definition['next'],
+        'next_level_documents' => $definition['documents'],
+    ];
+}
+
+function daily_transaction_usage(int $userId, bool $forUpdate = false): float
+{
+    $transactionColumns = db()->query('SHOW COLUMNS FROM transactions')->fetchAll(PDO::FETCH_COLUMN, 0);
+    $adminExclusion = in_array('description', $transactionColumns, true) ? " AND (description IS NULL OR description NOT LIKE 'Manual operation %')" : '';
+    $sql = "SELECT COALESCE(SUM(amount), 0) FROM transactions
+        WHERE user_id = ? AND type IN ('withdraw', 'withdrawal')
+        AND status IN ('approved', 'processing', 'pending', 'paid')
+        AND DATE(created_at) = CURDATE()" . $adminExclusion;
+    if ($forUpdate) $sql .= ' FOR UPDATE';
+    $stmt = db()->prepare($sql);
+    $stmt->execute([$userId]);
+    $total = (float)$stmt->fetchColumn();
+    if (table_exists('remittances')) {
+        // Remittances reserve/deduct wallet funds and count while pending or completed;
+        // rejected, cancelled, and reversed records do not consume the allowance.
+        $remittanceStmt = db()->prepare("SELECT COALESCE(SUM(amount_toman), 0) FROM remittances WHERE user_id = ? AND status IN ('pending', 'processing', 'approved', 'paid') AND DATE(created_at) = CURDATE()");
+        $remittanceStmt->execute([$userId]);
+        $total += (float)$remittanceStmt->fetchColumn();
+    }
+    return $total;
+}
+
+function daily_transaction_summary(int $userId, ?array $state = null): array
+{
+    $state ??= verification_state($userId);
+    $used = daily_transaction_usage($userId);
+    $limit = $state['daily_limit'];
+    return [
+        'daily_limit' => $limit,
+        'used_today' => $used,
+        'remaining_today' => $limit === null ? null : max(0, (float)$limit - $used),
+    ];
 }
 
 function is_logged_in(): bool

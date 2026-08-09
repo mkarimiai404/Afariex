@@ -37,6 +37,7 @@ export default function ProfileScreen() {
     setLoggingOut(true);
     try {
       await signOut();
+      if (router.canDismiss()) router.dismissAll();
       router.replace('/login' as any);
     } finally {
       setLoggingOut(false);

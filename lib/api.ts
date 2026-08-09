@@ -85,9 +85,24 @@ const getErrorDetails = (error: unknown) => {
 
 const toNetworkError = (endpoint: string, finalUrl: string, error: unknown) => {
   const details = getErrorDetails(error);
+  const lowerMessage = details.message.toLowerCase();
+  const responseKind = details.name === 'AbortError'
+    ? 'timeout'
+    : lowerMessage.includes('html response received')
+      ? 'html'
+      : lowerMessage.includes('invalid json response')
+        ? 'invalid_json'
+        : 'network';
   const wrappedError = new Error(`Request failed for ${endpoint} at ${finalUrl}: ${details.message}`);
-  wrappedError.name = 'ApiNetworkError';
+  wrappedError.name = responseKind === 'timeout'
+    ? 'ApiTimeoutError'
+    : responseKind === 'html'
+      ? 'ApiHtmlResponseError'
+      : responseKind === 'invalid_json'
+        ? 'ApiInvalidResponseError'
+        : 'ApiNetworkError';
   (wrappedError as Error & { isNetworkError?: boolean }).isNetworkError = true;
+  (wrappedError as Error & { responseKind?: string }).responseKind = responseKind;
   (wrappedError as Error & { cause?: unknown }).cause = details.cause ?? error;
   return wrappedError;
 };
@@ -127,8 +142,12 @@ export const fetchJson = async <T = JsonValue>(
         } catch { /* handled below */ }
         if (__DEV__) console.log(`[API] response status=${response.status} code=${responseCode} method=${method} url=${url}`);
 
-        if (text.startsWith('<')) {
+        const responseContentType = response.headers.get('content-type')?.toLowerCase() || '';
+        if (responseContentType.includes('text/html') || text.startsWith('<')) {
           throw new Error('HTML response received instead of JSON.');
+        }
+        if (parsedResponse === null) {
+          throw new Error('Invalid JSON response');
         }
 
         if (!response.ok) {
@@ -150,11 +169,7 @@ export const fetchJson = async <T = JsonValue>(
           );
         }
 
-        try {
-          return (parsedResponse ?? JSON.parse(text)) as T;
-        } catch {
-          throw new Error('Invalid JSON response');
-        }
+        return parsedResponse as T;
       } catch (error) {
         const details = getErrorDetails(error);
         const method = (init?.method || 'GET').toUpperCase();

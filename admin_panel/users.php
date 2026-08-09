@@ -1,6 +1,7 @@
 <?php
 declare(strict_types=1);
 require_once __DIR__ . '/layout.php';
+require_once __DIR__ . '/balance_view_helpers.php';
 require_login();
 require_permission('view');
 
@@ -11,6 +12,7 @@ $startDate = trim((string)($_GET['start_date'] ?? ''));
 $endDate = trim((string)($_GET['end_date'] ?? ''));
 $exportExcel = (string)($_GET['export'] ?? '') === 'excel';
 $exportPrint = (string)($_GET['export'] ?? '') === 'print';
+ensure_verification_schema();
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     verify_csrf_or_fail($_POST['csrf_token'] ?? null);
@@ -21,22 +23,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         $userId = (int)($_POST['user_id'] ?? 0);
         $manualAction = trim((string)($_POST['manual_action'] ?? ''));
-        $amount = (float)($_POST['amount'] ?? 0);
+        $amountInput = trim((string)($_POST['amount'] ?? ''));
         $agency = trim((string)($_POST['agency'] ?? ''));
         $sender = trim((string)($_POST['sender'] ?? ''));
         $receiver = trim((string)($_POST['receiver'] ?? ''));
-        $amountAfghani = (float)($_POST['amount_afghani'] ?? 0);
+        $amountAfghaniInput = trim((string)($_POST['amount_afghani'] ?? ''));
 
         $allowedActions = ['increase', 'decrease', 'remittance'];
 
-        if ($userId <= 0 || !in_array($manualAction, $allowedActions, true) || $amount <= 0) {
+        $isValidAmount = static function (string $value): bool {
+            return preg_match('/^(?:0|[1-9]\d*)(?:\.\d+)?$/', $value) === 1 && (float)$value > 0;
+        };
+
+        if ($userId <= 0 || !in_array($manualAction, $allowedActions, true) || !$isValidAmount($amountInput)) {
             flash('error', 'عملیات یا مبلغ وارد شده نامعتبر است.');
             header('Location: users.php?page=' . $page);
             exit;
         }
 
-        if ($manualAction === 'remittance' && ($agency === '' || $sender === '' || $receiver === '')) {
+        if ($manualAction === 'remittance' && ($agency === '' || $sender === '' || $receiver === '' || !$isValidAmount($amountAfghaniInput))) {
             flash('error', 'برای ثبت حواله، فیلدهای نمایندگی، فرستنده و گیرنده اجباری هستند.');
+            header('Location: users.php?page=' . $page);
+            exit;
+        }
+
+        $operationNonce = trim((string)($_POST['operation_nonce'] ?? ''));
+        if ($operationNonce === '' || !hash_equals((string)($_SESSION['manual_operation_nonce'] ?? ''), $operationNonce)) {
+            flash('error', 'Invalid or already processed operation.');
             header('Location: users.php?page=' . $page);
             exit;
         }
@@ -54,10 +67,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 exit;
             }
 
-            $userBalance = (float)($userRow['balance'] ?? 0);
+            $userBalance = (string)($userRow['balance'] ?? '0');
             $mobile = (string)($userRow['mobile'] ?? '');
+            $verification = verification_state($userId, true);
 
-            if (in_array($manualAction, ['decrease', 'remittance'], true) && $userBalance < $amount) {
+            if ($manualAction === 'decrease' && $verification['withdrawal_limit'] !== null && (float)$amountInput > (float)$verification['withdrawal_limit']) {
+                db()->rollBack();
+                flash('error', 'سقف برداشت سطح فعلی کاربر ۵,۰۰۰,۰۰۰ تومان است.');
+                header('Location: users.php?page=' . $page);
+                exit;
+            }
+
+            $sufficientBalance = true;
+            if (in_array($manualAction, ['decrease', 'remittance'], true)) {
+                $sufficientStmt = db()->prepare('SELECT id FROM users WHERE id = ? AND balance >= ?');
+                $sufficientStmt->execute([$userId, $amountInput]);
+                $sufficientBalance = (bool)$sufficientStmt->fetchColumn();
+            }
+            if (!$sufficientBalance) {
                 db()->rollBack();
                 flash('error', 'موجودی کاربر برای این برداشت کافی نیست.');
                 header('Location: users.php?page=' . $page);
@@ -66,17 +93,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             if ($manualAction === 'increase') {
                 $updateStmt = db()->prepare('UPDATE users SET balance = balance + ? WHERE id = ?');
-                $updateStmt->execute([$amount, $userId]);
+                $updateStmt->execute([$amountInput, $userId]);
                 $transactionType = 'deposit';
             } elseif ($manualAction === 'decrease') {
-                $updateStmt = db()->prepare('UPDATE users SET balance = balance - ? WHERE id = ?');
-                $updateStmt->execute([$amount, $userId]);
+                $updateStmt = db()->prepare('UPDATE users SET balance = balance - ? WHERE id = ? AND balance >= ?');
+                $updateStmt->execute([$amountInput, $userId, $amountInput]);
+                if ($updateStmt->rowCount() !== 1) {
+                    throw new RuntimeException('Insufficient wallet balance.');
+                }
                 $transactionType = 'withdrawal';
             } else {
-                $updateStmt = db()->prepare('UPDATE users SET balance = balance - ? WHERE id = ?');
-                $updateStmt->execute([$amount, $userId]);
+                $updateStmt = db()->prepare('UPDATE users SET balance = balance - ? WHERE id = ? AND balance >= ?');
+                $updateStmt->execute([$amountInput, $userId, $amountInput]);
+                if ($updateStmt->rowCount() !== 1) {
+                    throw new RuntimeException('Insufficient wallet balance.');
+                }
                 $transactionType = 'remittance';
             }
+
+            $balanceStmt = db()->prepare('SELECT balance FROM users WHERE id = ?');
+            $balanceStmt->execute([$userId]);
+            $balanceAfter = (string)$balanceStmt->fetchColumn();
 
             if ($manualAction === 'remittance') {
                 $remittanceColumns = db()->query('SHOW COLUMNS FROM remittances')
@@ -92,7 +129,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ];
 
                 if (in_array('amount_afghani', $remittanceColumns, true)) {
-                    $remittanceData['amount_afghani'] = $amountAfghani;
+                    $remittanceData['amount_afghani'] = $amountAfghaniInput;
                 }
                 if (in_array('created_at', $remittanceColumns, true)) {
                     $remittanceData['created_at'] = date('Y-m-d H:i:s');
@@ -117,16 +154,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             $transactionData = [
                 'user_id' => $userId,
-                'amount' => $amount,
+                'amount' => $amountInput,
                 'type' => $transactionType,
                 'status' => 'approved',
             ];
+            if (in_array('description', $transactionColumns, true)) {
+                $transactionData['description'] = $manualAction === 'remittance'
+                    ? "Remittance {$agency} / {$sender} / {$receiver}"
+                    : "Manual operation {$manualAction}";
+            }
 
             if (in_array('balance_applied', $transactionColumns, true)) {
                 $transactionData['balance_applied'] = 1;
             }
             if (in_array('created_at', $transactionColumns, true)) {
                 $transactionData['created_at'] = date('Y-m-d H:i:s');
+            }
+            if (in_array('balance_before', $transactionColumns, true)) {
+                $transactionData['balance_before'] = $userBalance;
+            }
+            if (in_array('balance_after', $transactionColumns, true)) {
+                $transactionData['balance_after'] = $balanceAfter;
+            }
+            if (in_array('operator_id', $transactionColumns, true)) {
+                $transactionData['operator_id'] = (int)($_SESSION['admin_id'] ?? 0);
+            } elseif (in_array('admin_id', $transactionColumns, true)) {
+                $transactionData['admin_id'] = (int)($_SESSION['admin_id'] ?? 0);
             }
 
             if (!in_array('user_id', $transactionColumns, true) || !in_array('amount', $transactionColumns, true) || !in_array('type', $transactionColumns, true) || !in_array('status', $transactionColumns, true)) {
@@ -146,15 +199,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'manual_operation',
                 'users',
                 $userId,
-                "عملیات دستی {$manualAction} برای کاربر {$mobile} به مبلغ {$amount}"
+                "عملیات دستی {$manualAction} برای کاربر {$mobile} به مبلغ {$amountInput}"
             );
             db()->commit();
+            unset($_SESSION['manual_operation_nonce']);
             flash('success', 'عملیات دستی با موفقیت انجام شد.');
         } catch (Throwable $e) {
             if (db()->inTransaction()) {
                 db()->rollBack();
             }
-            throw $e;
+            flash('error', $e->getMessage() === 'Insufficient wallet balance.'
+                ? 'Insufficient wallet balance.'
+                : 'Operation failed; all changes were rolled back.');
         }
 
         header('Location: users.php?page=' . $page);
@@ -262,12 +318,21 @@ $totalPages = max(1, (int)ceil($totalRows / $perPage));
 $limit = (int)$perPage;
 $offset = (int)$offset;
 
-$stmt = db()->prepare("SELECT id, mobile, first_name, last_name, pin_code, role, created_at FROM users {$whereSql} ORDER BY id DESC LIMIT {$limit} OFFSET {$offset}");
+$stmt = db()->prepare("SELECT id, mobile, first_name, last_name, balance, pin_code, role, created_at FROM users {$whereSql} ORDER BY id DESC LIMIT {$limit} OFFSET {$offset}");
 $stmt->execute($params);
 $rows = $stmt->fetchAll();
+foreach ($rows as &$userRow) {
+    $userRow['verification'] = verification_state((int)$userRow['id']);
+    $pendingRequestStmt = db()->prepare("SELECT id, status FROM verification_upgrade_requests WHERE user_id = ? ORDER BY id DESC LIMIT 1");
+    $pendingRequestStmt->execute([(int)$userRow['id']]);
+    $userRow['upgrade_request'] = $pendingRequestStmt->fetch() ?: null;
+}
+unset($userRow);
+$pendingUpgradeStmt = db()->query("SELECT r.id, r.user_id, r.created_at, u.mobile, u.first_name, u.last_name, v.level FROM verification_upgrade_requests r INNER JOIN users u ON u.id = r.user_id LEFT JOIN user_verification_levels v ON v.user_id = r.user_id WHERE r.status = 'pending' ORDER BY r.id ASC");
+$pendingUpgrades = $pendingUpgradeStmt->fetchAll();
 
 if ($exportExcel) {
-    $exportStmt = db()->prepare("SELECT id, mobile, first_name, last_name, pin_code, role, created_at FROM users {$whereSql} ORDER BY id DESC");
+    $exportStmt = db()->prepare("SELECT id, mobile, first_name, last_name, balance, pin_code, role, created_at FROM users {$whereSql} ORDER BY id DESC");
     $exportStmt->execute($params);
     $exportRows = [];
     while ($row = $exportStmt->fetch()) {
@@ -275,6 +340,7 @@ if ($exportExcel) {
             '#' . (string)$row['id'],
             (string)$row['mobile'],
             trim((string)($row['first_name'] ?? '') . ' ' . (string)($row['last_name'] ?? '')),
+            admin_balance_with_unit($row['balance'] ?? null),
             (string)($row['pin_code'] ?? '-'),
             (string)($row['role'] ?? ''),
             to_jalali_datetime((string)$row['created_at']),
@@ -283,13 +349,13 @@ if ($exportExcel) {
 
     export_xls_table(
         'Users_Report_' . date('Ymd_His') . '.xls',
-        ['شناسه', 'شماره موبایل', 'نام کامل', 'پین کد', 'نقش', 'تاریخ ایجاد'],
+        ['شناسه', 'شماره موبایل', 'نام کامل', 'موجودی', 'پین کد', 'نقش', 'تاریخ ایجاد'],
         $exportRows
     );
 }
 
 if ($exportPrint) {
-    $printStmt = db()->prepare("SELECT id, mobile, first_name, last_name, pin_code, role, created_at FROM users {$whereSql} ORDER BY id DESC");
+    $printStmt = db()->prepare("SELECT id, mobile, first_name, last_name, balance, pin_code, role, created_at FROM users {$whereSql} ORDER BY id DESC");
     $printStmt->execute($params);
     $printRows = [];
     while ($row = $printStmt->fetch()) {
@@ -297,6 +363,7 @@ if ($exportPrint) {
             '#' . (string)$row['id'],
             (string)$row['mobile'],
             trim((string)($row['first_name'] ?? '') . ' ' . (string)($row['last_name'] ?? '')),
+            admin_balance_with_unit($row['balance'] ?? null),
             (string)($row['pin_code'] ?? '-'),
             (string)($row['role'] ?? ''),
             to_jalali_datetime((string)$row['created_at']),
@@ -305,13 +372,17 @@ if ($exportPrint) {
 
     render_print_table_view(
         'گزارش کاربران',
-        ['شناسه', 'شماره موبایل', 'نام کامل', 'پین کد', 'نقش', 'تاریخ ایجاد'],
+        ['شناسه', 'شماره موبایل', 'نام کامل', 'موجودی', 'پین کد', 'نقش', 'تاریخ ایجاد'],
         $printRows,
         'فیلتر بازه تاریخ اعمال شده است.'
     );
 }
 
 $csrf = csrf_token();
+if (empty($_SESSION['manual_operation_nonce'])) {
+    $_SESSION['manual_operation_nonce'] = bin2hex(random_bytes(16));
+}
+$manualOperationNonce = (string)$_SESSION['manual_operation_nonce'];
 
 render_page_start('مدیریت کاربران', 'users');
 ?>
@@ -348,7 +419,32 @@ render_page_start('مدیریت کاربران', 'users');
     padding: 0;
     display: inline-block;
   }
+  .admin-balance-badge { display:inline-flex;align-items:center;justify-content:center;padding:7px 11px;border-radius:10px;background:#ecfdf5;color:#047857;border:1px solid #a7f3d0;font-weight:800;white-space:nowrap;direction:rtl; }
+  .admin-balance-panel { padding:14px 16px;border-radius:12px;background:#ecfdf5;border:1px solid #a7f3d0;color:#065f46;font-weight:800;text-align:right; }
+  @media (max-width: 840px) { .admin-balance-badge { width:100%;box-sizing:border-box; } }
 </style>
+<?php if ($pendingUpgrades !== []): ?>
+<div class="card">
+  <h3 style="margin-top:0;">درخواست‌های ارتقاء سطح کاربری</h3>
+  <p><a class="btn btn-primary btn-sm" href="verifications.php">مشاهده مدارک و بررسی امن درخواست‌ها</a></p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>کاربر</th><th>موبایل</th><th>سطح فعلی</th><th>سقف برداشت</th><th>عملیات</th></tr></thead>
+      <tbody>
+      <?php foreach ($pendingUpgrades as $upgrade): $upgradeState = verification_state((int)$upgrade['user_id']); ?>
+        <tr>
+          <td><?= e(trim(($upgrade['first_name'] ?? '') . ' ' . ($upgrade['last_name'] ?? ''))) ?></td>
+          <td dir="ltr"><?= e((string)$upgrade['mobile']) ?></td>
+          <td><?= e((string)$upgradeState['level']) ?> / تلفن <?= $upgradeState['phone_verified'] ? 'تأییدشده' : 'تأییدنشده' ?></td>
+          <td><?= e(number_format((float)$upgradeState['withdrawal_limit'])) ?> تومان</td>
+          <td><a class="btn btn-sm" href="verifications.php?status=pending">بررسی در صف احراز هویت</a></td>
+        </tr>
+      <?php endforeach; ?>
+      </tbody>
+    </table>
+  </div>
+</div>
+<?php endif; ?>
 <div class="card">
   <div class="actions" style="justify-content: space-between;">
     <h3 style="margin:0;">لیست کاربران</h3>
@@ -371,7 +467,7 @@ render_page_start('مدیریت کاربران', 'users');
     <table id="usersTable">
       <thead>
         <tr>
-          <th>#</th><th>شماره موبایل</th><th>نام کامل</th><th>پین کد</th><th>نقش</th><th>تاریخ ایجاد</th><th>عملیات</th>
+          <th>#</th><th>شماره موبایل</th><th>نام کامل</th><th>موجودی</th><th>پین کد</th><th>نقش</th><th>تاریخ ایجاد</th><th>عملیات</th>
         </tr>
         <tr class="filter-row">
           <th><input class="users-table-filter" data-col="0" placeholder="جستجو"></th>
@@ -380,6 +476,7 @@ render_page_start('مدیریت کاربران', 'users');
           <th><input class="users-table-filter" data-col="3" placeholder="جستجو"></th>
           <th><input class="users-table-filter" data-col="4" placeholder="جستجو"></th>
           <th><input class="users-table-filter" data-col="5" placeholder="جستجو"></th>
+          <th><input class="users-table-filter" data-col="6" placeholder="جستجو"></th>
           <th style="text-align:center;">
             <button type="button" class="btn btn-primary btn-sm" onclick="(function(){const evt=new Event('input',{bubbles:true});document.querySelectorAll('#usersTable .filter-row input[data-col]').forEach(i=>i.dispatchEvent(evt));})();">فیلتر</button>
           </th>
@@ -389,16 +486,22 @@ render_page_start('مدیریت کاربران', 'users');
       <?php foreach ($rows as $row): ?>
         <tr>
           <td><?= e((string)$row['id']) ?></td>
-          <td><?= e($row['mobile']) ?></td>
+          <?php $rowVerification = verification_state((int)$row['id']); ?>
+          <td><?= e($row['mobile']) ?><br><small>تأیید تلفن: <?= $rowVerification['phone_verified'] ? 'بله' : 'خیر' ?><?= $rowVerification['phone_verified_at'] ? ' / ' . e((string)$rowVerification['phone_verified_at']) : '' ?></small></td>
           <td><?= e(trim(($row['first_name'] ?? '') . ' ' . ($row['last_name'] ?? ''))) ?></td>
+          <td><span class="admin-balance-badge"><?= e(admin_balance_with_unit($row['balance'] ?? null)) ?></span></td>
           <td><?= e($row['pin_code'] ?? '-') ?></td>
-          <td><?= e($row['role']) ?></td>
+          <td>
+            <?= e($row['role']) ?><br>
+            <small><?= e((string)$rowVerification['level']) ?> · <?= $rowVerification['withdrawal_limit'] === null ? 'بدون سقف اولیه' : e(number_format((float)$rowVerification['withdrawal_limit'])) . ' تومان' ?></small>
+          </td>
           <td><?= e(to_jalali_datetime((string)$row['created_at'])) ?></td>
           <td class="text-nowrap">
             <div class="d-flex flex-row align-items-center users-row-actions" style="gap: 8px; flex-wrap: nowrap;">
               <?php if (can('edit')): ?>
                 <button class="btn btn-light btn-sm" data-id="<?= e((string)$row['id']) ?>"
                         data-mobile="<?= e($row['mobile']) ?>"
+                        data-balance="<?= e(admin_balance_with_unit($row['balance'] ?? null)) ?>"
                         onclick="openManualOperations(this)">عملیات دستی</button>
               <?php endif; ?>
               <?php if (can('edit')): ?>
@@ -407,6 +510,7 @@ render_page_start('مدیریت کاربران', 'users');
                         data-mobile="<?= e($row['mobile']) ?>"
                         data-first_name="<?= e($row['first_name'] ?? '') ?>"
                         data-last_name="<?= e($row['last_name'] ?? '') ?>"
+                        data-balance="<?= e(admin_balance_with_unit($row['balance'] ?? null)) ?>"
                         data-pin_code="<?= e($row['pin_code'] ?? '') ?>"
                         data-role="<?= e($row['role']) ?>"
                         onclick="openEditUser(this)">ویرایش</button>
@@ -465,10 +569,12 @@ render_page_start('مدیریت کاربران', 'users');
       <form method="post" class="form-grid">
         <input type="hidden" name="csrf_token" value="<?= e($csrf) ?>">
         <input type="hidden" name="action" value="manual_operation">
+        <input type="hidden" name="operation_nonce" value="<?= e($manualOperationNonce) ?>">
         <input type="hidden" name="user_id" id="manualOperationUserId">
         <div class="col-12">
           <p id="manualOperationUserHint" class="field-label">کاربر: -</p>
         </div>
+        <div class="col-12"><div id="manualOperationBalance" class="admin-balance-panel">موجودی فعلی حساب: —</div></div>
         <div class="col-6">
           <label class="field-label">نوع عملیات</label>
           <select class="select" id="manualOperationType" name="manual_action" onchange="toggleRemittanceFields(this.value)">
@@ -515,6 +621,7 @@ render_page_start('مدیریت کاربران', 'users');
         <input type="hidden" name="csrf_token" value="<?= e($csrf) ?>">
         <input type="hidden" name="action" value="update">
         <input type="hidden" name="id" id="editUserId">
+        <div class="col-12"><div id="editUserBalance" class="admin-balance-panel">موجودی فعلی حساب: —</div></div>
         <div class="col-3"><label class="field-label">شماره موبایل</label><input class="input" id="editUserMobile" name="mobile"></div>
         <div class="col-3"><label class="field-label">نام</label><input class="input" id="editUserFirstName" name="first_name"></div>
         <div class="col-3"><label class="field-label">نام خانوادگی</label><input class="input" id="editUserLastName" name="last_name"></div>
@@ -537,6 +644,7 @@ render_page_start('مدیریت کاربران', 'users');
     document.getElementById('editUserMobile').value = btn.dataset.mobile || '';
     document.getElementById('editUserFirstName').value = btn.dataset.first_name || '';
     document.getElementById('editUserLastName').value = btn.dataset.last_name || '';
+    document.getElementById('editUserBalance').textContent = 'موجودی فعلی حساب: ' + (btn.dataset.balance || '—');
     document.getElementById('editUserPinCode').value = btn.dataset.pin_code || '';
     document.getElementById('editUserRole').value = btn.dataset.role || 'viewer';
   }
@@ -545,13 +653,14 @@ render_page_start('مدیریت کاربران', 'users');
     const modal = document.getElementById('manualOperationsModal');
     if (!modal) return;
 
+    document.querySelector('#manualOperationsModal form').reset();
     document.getElementById('manualOperationUserId').value = btn.dataset.id || '';
     document.getElementById('manualOperationUserHint').textContent = 'کاربر: ' + (btn.dataset.mobile || '-');
+    document.getElementById('manualOperationBalance').textContent = 'موجودی فعلی حساب: ' + (btn.dataset.balance || '—');
     document.getElementById('manualOperationAgency').value = '';
     document.getElementById('manualOperationSender').value = '';
     document.getElementById('manualOperationReceiver').value = '';
     document.getElementById('manualOperationAmountAfghani').value = '';
-    document.querySelector('#manualOperationsModal form').reset();
     const typeSelect = document.getElementById('manualOperationType');
     typeSelect.value = 'increase';
     toggleRemittanceFields(typeSelect.value);

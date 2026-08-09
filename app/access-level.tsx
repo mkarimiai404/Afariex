@@ -19,12 +19,12 @@ const money = (value: unknown) => value === null || value === undefined ? 'تن�
 export default function AccessLevelScreen() {
   const router = useRouter();
   const rootState = useRootNavigationState();
-  const { userId, userToken, isAuthenticated, isInitialized } = useAuth();
+  const { userToken, isAuthenticated, isInitialized } = useAuth();
   const [state, setState] = useState<any>(null);
   const [loading, setLoading] = useState(true);
 
   const loadState = useCallback(async () => {
-    if (!userId || !userToken) return;
+    if (!userToken) return;
     try {
       const body = new URLSearchParams({ api_token: String(userToken) });
       const result = await fetchJson<any>('profile.php', { method: 'POST', body: body.toString(), headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
@@ -34,7 +34,7 @@ export default function AccessLevelScreen() {
     } finally {
       setLoading(false);
     }
-  }, [userId, userToken]);
+  }, [userToken]);
 
   useEffect(() => {
     if (!rootState?.key || !isInitialized) return;
@@ -74,6 +74,7 @@ export default function AccessLevelScreen() {
           {level === 'bronze' && <View style={styles.actionBox}><Text style={styles.description}>برای افزایش سقف روزانه، تصویر مدرک هویتی و سلفی با مدرک را ارسال کنید.</Text><TouchableOpacity style={styles.button} onPress={() => router.push('/verification-upgrade?type=silver' as any)} disabled={pending && requestType === 'silver'}><Text style={styles.buttonText}>{pending && requestType === 'silver' ? 'درخواست نقره‌ای در حال بررسی است' : 'ارتقاء به سطح نقره‌ای'}</Text></TouchableOpacity></View>}
           {level === 'silver' && <View style={styles.actionBox}><Text style={styles.description}>برای دریافت سطح طلایی، ویدیوی احراز هویت و کارت بانکی به نام خود را ارسال کنید.</Text><TouchableOpacity style={styles.button} onPress={() => router.push('/verification-upgrade?type=gold' as any)} disabled={pending && requestType === 'gold'}><Text style={styles.buttonText}>{pending && requestType === 'gold' ? 'درخواست طلایی در حال بررسی است' : 'ارتقاء به سطح طلایی'}</Text></TouchableOpacity></View>}
           {state?.upgrade_request_status === 'rejected' && <View style={styles.warning}><Text style={styles.warningText}>درخواست قبلی رد شده است: {state?.rejection_reason || 'لطفاً مدارک را اصلاح و دوباره ارسال کنید.'}</Text></View>}
+          {state?.upgrade_request_status === 'approved' && <View style={styles.approved}><Text style={styles.approvedText}>درخواست احراز هویت شما تأیید شده است.</Text></View>}
           {level === 'gold' && state?.daily_limit === null && <View style={styles.warning}><Text style={styles.warningText}>سقف سطح طلایی هنوز توسط مدیریت تنظیم نشده است.</Text></View>}
         </ScrollView>}
       </View>
@@ -87,5 +88,5 @@ const styles = StyleSheet.create({
   levelRow: { flexDirection: 'row-reverse', gap: 8, marginBottom: 14 }, levelPill: { flex: 1, borderWidth: 1, borderColor: '#e5e7eb', borderRadius: 12, paddingVertical: 10, alignItems: 'center' }, levelText: { fontFamily: 'VazirmatnBold', fontSize: 12, color: '#9ca3af' },
   card: { backgroundColor: '#fff', borderRadius: 20, padding: 22, alignItems: 'center', marginBottom: 14 }, levelTitle: { fontFamily: 'VazirmatnBold', fontSize: 18, color: '#111827', marginTop: 10 }, phone: { fontFamily: 'Vazirmatn', color: '#64748b', marginTop: 6 }, status: { fontFamily: 'Vazirmatn', color: '#059669', marginTop: 8, textAlign: 'center' }, unverified: { color: '#dc2626' }, secondaryButton: { marginTop: 14, padding: 8 }, secondaryText: { fontFamily: 'VazirmatnBold', color: '#2563eb' },
   infoCard: { backgroundColor: '#fff', borderRadius: 16, padding: 20, marginBottom: 14 }, label: { fontFamily: 'Vazirmatn', fontSize: 12, color: '#6b7280', textAlign: 'right', marginTop: 5 }, value: { fontFamily: 'VazirmatnBold', fontSize: 22, color: '#0f766e', textAlign: 'right', marginBottom: 8 }, valueSmall: { fontFamily: 'VazirmatnBold', fontSize: 16, color: '#334155', textAlign: 'right', marginBottom: 5 },
-  actionBox: { backgroundColor: '#fff', borderRadius: 16, padding: 20 }, description: { fontFamily: 'Vazirmatn', color: '#475569', textAlign: 'right', lineHeight: 24 }, button: { backgroundColor: '#0ed874', borderRadius: 12, minHeight: 52, alignItems: 'center', justifyContent: 'center', marginTop: 16, paddingHorizontal: 12 }, buttonText: { fontFamily: 'VazirmatnBold', color: '#fff' }, warning: { backgroundColor: '#fffbeb', borderRadius: 12, padding: 16, marginTop: 14 }, warningText: { fontFamily: 'Vazirmatn', color: '#92400e', textAlign: 'right' },
+  actionBox: { backgroundColor: '#fff', borderRadius: 16, padding: 20 }, description: { fontFamily: 'Vazirmatn', color: '#475569', textAlign: 'right', lineHeight: 24 }, button: { backgroundColor: '#0ed874', borderRadius: 12, minHeight: 52, alignItems: 'center', justifyContent: 'center', marginTop: 16, paddingHorizontal: 12 }, buttonText: { fontFamily: 'VazirmatnBold', color: '#fff' }, warning: { backgroundColor: '#fffbeb', borderRadius: 12, padding: 16, marginTop: 14 }, warningText: { fontFamily: 'Vazirmatn', color: '#92400e', textAlign: 'right' }, approved: { backgroundColor: '#ecfdf5', borderRadius: 12, padding: 16, marginTop: 14 }, approvedText: { fontFamily: 'Vazirmatn', color: '#047857', textAlign: 'right' },
 });

@@ -1,7 +1,21 @@
 <?php
 declare(strict_types=1);
 
+$allowedOrigins = ['http://localhost:8081', 'http://127.0.0.1:8081', 'https://afariex.ir'];
+$origin = $_SERVER['HTTP_ORIGIN'] ?? '';
+if (in_array($origin, $allowedOrigins, true)) {
+    header('Access-Control-Allow-Origin: ' . $origin);
+    header('Vary: Origin');
+}
+header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
+header('Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With');
+header('Access-Control-Max-Age: 86400');
 header('Content-Type: application/json; charset=utf-8');
+
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'OPTIONS') {
+    http_response_code(204);
+    exit;
+}
 
 require_once __DIR__ . '/../admin_panel/config.php';
 
@@ -54,11 +68,18 @@ if ($agency === '' || $senderName === '' || $receiverName === '' || $receiverPho
 }
 
 try {
+    // This helper may create its verification table. Run schema setup before
+    // the financial transaction because MySQL DDL implicitly commits.
+    ensure_verification_schema();
     db()->beginTransaction();
 
-    $userStmt = db()->prepare('SELECT id, balance, overdraft_limit FROM users WHERE id = ? LIMIT 1 FOR UPDATE');
-    $userStmt->execute([$userId]);
+    $userStmt = db()->prepare('SELECT id, balance, overdraft_limit FROM users WHERE api_token = ? LIMIT 1 FOR UPDATE');
+    $userStmt->execute([$apiToken]);
     $user = $userStmt->fetch();
+    if ($user) {
+        // The authenticated token is authoritative; do not trust a client user_id.
+        $userId = (int)$user['id'];
+    }
 
     if (!$user) {
         db()->rollBack();
@@ -69,9 +90,22 @@ try {
     $overdraftLimit = (float)($user['overdraft_limit'] ?? 0);
     $availableFunds = $balance + $overdraftLimit;
 
+    $verification = verification_state($userId, true);
+    $dailyUsage = daily_transaction_usage($userId, true);
+    $dailyLimit = $verification['daily_limit'];
+    if ($dailyLimit === null) {
+        db()->rollBack();
+        json_response(['success' => false, 'code' => 'GOLD_LIMIT_NOT_CONFIGURED', 'message' => 'سقف تراکنش سطح طلایی هنوز توسط مدیریت تنظیم نشده است.'], 503);
+    }
+    $dailyRemaining = max(0, (float)$dailyLimit - $dailyUsage);
+    if ($amountToman > $dailyRemaining) {
+        db()->rollBack();
+        json_response(['success' => false, 'code' => 'DAILY_TRANSACTION_LIMIT_EXCEEDED', 'message' => 'سقف تراکنش روزانه سطح فعلی شما تکمیل شده است. برای افزایش سقف، سطح کاربری خود را ارتقاء دهید.', 'data' => ['level' => $verification['level'], 'daily_limit' => $dailyLimit, 'used_today' => $dailyUsage, 'remaining_today' => $dailyRemaining, 'requested_amount' => $amountToman, 'upgrade_required' => true]], 422);
+    }
+
     if ($amountToman > $availableFunds) {
         db()->rollBack();
-        json_response(['success' => false, 'message' => 'موجودی و اعتبار کاربر برای ثبت حواله کافی نیست.'], 400);
+        json_response(['success' => false, 'code' => 'INSUFFICIENT_BALANCE', 'message' => 'موجودی و اعتبار کاربر برای ثبت حواله کافی نیست.'], 422);
     }
 
     $insertStmt = db()->prepare('
@@ -94,8 +128,11 @@ try {
 
     $remittanceId = (int)db()->lastInsertId();
 
-    $balanceStmt = db()->prepare('UPDATE users SET balance = balance - ? WHERE id = ?');
-    $balanceStmt->execute([$amountToman, $userId]);
+    $balanceStmt = db()->prepare('UPDATE users SET balance = balance - ? WHERE id = ? AND balance + overdraft_limit >= ?');
+    $balanceStmt->execute([$amountToman, $userId, $amountToman]);
+    if ($balanceStmt->rowCount() !== 1) {
+        throw new RuntimeException('Wallet balance changed before remittance deduction.');
+    }
 
     db()->commit();
 

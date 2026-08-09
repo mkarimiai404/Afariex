@@ -51,52 +51,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     let active = true;
-    if (__DEV__) console.log('[Auth] hydration started');
-    Promise.all([
-      AsyncStorage.getItem(AUTH_STORAGE_KEY),
-      AsyncStorage.getItem('api_token'),
-      AsyncStorage.getItem('userToken'),
-      AsyncStorage.getItem('user_token'),
-      AsyncStorage.getItem('user_id'),
-      AsyncStorage.getItem('userId'),
-    ])
-      .then(async ([stored, legacyApiToken, legacyUserToken, legacyUserTokenAlt, legacyUserId, legacyUserIdAlt]) => {
-        if (!active) return;
-        try {
-          const parsed = stored ? JSON.parse(stored) as Partial<AuthSession> : {};
-          const canonicalToken = typeof parsed.userToken === 'string' ? parsed.userToken.trim() : '';
-          const legacyToken = legacyApiToken || legacyUserToken || legacyUserTokenAlt;
-          const legacyId = legacyUserId || legacyUserIdAlt;
-          const nextSession: AuthSession = {
-            ...emptySession(),
-            ...parsed,
-            userToken: canonicalToken || legacyToken?.trim() || null,
-            userId: parsed.userId || legacyId || null,
-          };
-          if (!nextSession.userToken) {
-            await clearStoredAuth();
-          } else {
-            if (!canonicalToken || legacyToken) {
-              await AsyncStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(nextSession));
-            }
-            if (legacyToken || legacyId) {
-              await Promise.all(LEGACY_AUTH_KEYS.map((key) => AsyncStorage.removeItem(key)));
-            }
-          }
-          if (active) setSession(nextSession);
-        } catch {
-          await clearStoredAuth();
-          if (active) setSession(emptySession());
-        }
-      })
-      .catch(async () => {
-        await clearStoredAuth();
-        if (active) setSession(emptySession());
-      })
+    // Authentication is deliberately process-scoped. On every fresh runtime,
+    // delete keys written by older builds without ever reading/restoring them.
+    clearStoredAuth()
+      .catch(() => undefined)
       .finally(() => {
         if (active) {
+          setSession(emptySession());
           setIsInitialized(true);
-          if (__DEV__) console.log('[Auth] hydration completed');
         }
       });
     return () => { active = false; };
@@ -115,17 +77,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       signIn: (nextSession) => {
         setSession((prev) => {
           const token = typeof nextSession.userToken === 'string' ? nextSession.userToken.trim() : '';
-          const next = {
+          return {
             ...prev,
             ...nextSession,
             userToken: token || null,
           };
-          if (token) {
-            AsyncStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(next)).catch(() => undefined);
-          } else {
-            clearStoredAuth().catch(() => undefined);
-          }
-          return next;
         });
       },
       signOut: async () => {

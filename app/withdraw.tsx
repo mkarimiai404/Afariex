@@ -13,8 +13,11 @@ export default function WithdrawScreen() {
   const router = useRouter();
   const { userId, userToken } = useAuth();
   const [amount, setAmount] = useState('');
+  const [cardNumber, setCardNumber] = useState('');
+  const [cardholderName, setCardholderName] = useState('');
   const [limit, setLimit] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
+  const [idempotencyKey, setIdempotencyKey] = useState(() => `withdraw-${Date.now()}-${Math.random().toString(36).slice(2, 14)}`);
 
   useEffect(() => {
     if (!userId || !userToken) return;
@@ -40,10 +43,25 @@ export default function WithdrawScreen() {
       showError('خطا', 'لطفاً مبلغ معتبر و بیشتر از صفر وارد کنید.');
       return;
     }
-    if (!userId || !userToken || loading) return;
+    const normalizedCard = cardNumber.replace(/[۰-۹]/g, (digit) => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(digit))).replace(/[٠-٩]/g, (digit) => String('٠١٢٣٤٥٦٧٨٩'.indexOf(digit))).replace(/[\s-]/g, '');
+    if (!/^\d{16}$/.test(normalizedCard)) {
+      showError('شماره کارت نامعتبر', 'شماره کارت بانکی ۱۶ رقمی را وارد کنید.');
+      return;
+    }
+    if (cardholderName.trim().length < 3) {
+      showError('نام صاحب کارت نامعتبر', 'نام و نام خانوادگی صاحب کارت را وارد کنید.');
+      return;
+    }
+    if (!userToken || loading) return;
     setLoading(true);
     try {
-      const body = new URLSearchParams({ user_id: userId, api_token: userToken, amount: String(value), request_id: `${Date.now()}-${Math.random().toString(36).slice(2)}` });
+      const body = new URLSearchParams({
+        api_token: userToken,
+        amount: String(value),
+        card_number: normalizedCard,
+        cardholder_name: cardholderName.trim(),
+        idempotency_key: idempotencyKey,
+      });
       const response = await fetch(apiUrl('withdraw.php'), { method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' }, body: body.toString() });
       const data = await response.json();
       if (data?.code === 'DAILY_TRANSACTION_LIMIT_EXCEEDED' || data?.code === 'WITHDRAWAL_LIMIT_EXCEEDED') {
@@ -55,6 +73,9 @@ export default function WithdrawScreen() {
       } else {
         showSuccess('موفق', data.message || 'برداشت با موفقیت ثبت شد.');
         setAmount('');
+        setCardNumber('');
+        setCardholderName('');
+        setIdempotencyKey(`withdraw-${Date.now()}-${Math.random().toString(36).slice(2, 14)}`);
       }
     } catch {
       showError('خطا', 'ارتباط با سرور برقرار نشد.');
@@ -75,6 +96,10 @@ export default function WithdrawScreen() {
           <View style={styles.card}>
             <Text style={styles.label}>مبلغ برداشت (تومان)</Text>
             <TextInput style={styles.input} value={amount} onChangeText={setAmount} keyboardType="numeric" placeholder="مبلغ را وارد کنید" textAlign="right" />
+            <Text style={styles.labelWithSpacing}>شماره کارت</Text>
+            <TextInput style={styles.input} value={cardNumber} onChangeText={setCardNumber} keyboardType="numeric" maxLength={22} placeholder="شماره کارت ۱۶ رقمی" textAlign="right" />
+            <Text style={styles.labelWithSpacing}>نام و نام خانوادگی صاحب کارت</Text>
+            <TextInput style={styles.input} value={cardholderName} onChangeText={setCardholderName} maxLength={150} placeholder="نام کامل صاحب کارت" textAlign="right" />
             <Text style={styles.limitText}>سقف برداشت سطح فعلی: {limit === null ? 'بدون محدودیت اولیه' : `${limit.toLocaleString('en-US')} تومان`}</Text>
             <TouchableOpacity style={[styles.button, loading && styles.disabled]} onPress={submit} disabled={loading}>
               {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.buttonText}>ثبت برداشت</Text>}
@@ -96,6 +121,7 @@ const styles = StyleSheet.create({
   content: { paddingBottom: 30 },
   card: { backgroundColor: '#fff', borderRadius: 18, padding: 20 },
   label: { fontFamily: 'Vazirmatn', color: '#4b5563', textAlign: 'right', marginBottom: 8 },
+  labelWithSpacing: { fontFamily: 'Vazirmatn', color: '#4b5563', textAlign: 'right', marginBottom: 8, marginTop: 16 },
   input: { borderWidth: 1, borderColor: '#e5e7eb', borderRadius: 12, padding: 14, fontFamily: 'Vazirmatn', fontSize: 16, color: '#111827' },
   limitText: { fontFamily: 'Vazirmatn', fontSize: 12, color: '#6b7280', textAlign: 'right', marginTop: 12 },
   button: { backgroundColor: '#0ed874', borderRadius: 12, minHeight: 52, alignItems: 'center', justifyContent: 'center', marginTop: 22 },
