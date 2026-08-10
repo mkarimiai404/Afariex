@@ -14,6 +14,7 @@ import { useRouter, Stack } from 'expo-router'; // Stack اضافه شد
 
 import { fetchJson, isApiResponseError } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
+import { InvalidLoginResponseError, parseLoginSession } from '@/lib/login-session';
 import { showError } from '@/lib/toast';
 
 export default function LoginScreen() {
@@ -54,22 +55,13 @@ export default function LoginScreen() {
         body: formData,
       });
 
-      const loginToken = typeof data?.data?.api_token === 'string' ? data.data.api_token.trim() : '';
-      if (data?.status === 'success' && loginToken) {
-        const fullName = data.data.full_name || data.data.name;
-        const userId = data.data.id || data.data.user_id;
-        signIn({
-          userToken: loginToken,
-          userMobile: data.data.mobile ? String(data.data.mobile) : null,
-          userName: fullName ? String(fullName) : null,
-          userId: userId ? String(userId) : null,
-        });
-      } else {
-        showError('خطا در ورود', data.message || 'شماره موبایل یا رمز عبور اشتباه است.');
-      }
+      await signIn(parseLoginSession(data));
+      router.replace('/dashboard');
     } catch (error) {
       if (isApiResponseError(error) && error.safeMessage) {
         showError('خطا در ورود', error.safeMessage);
+      } else if (error instanceof InvalidLoginResponseError) {
+        showError('خطا در ورود', 'پاسخ ورود معتبر نیست. لطفاً دوباره تلاش کنید.');
       } else {
         showError('خطای ارتباط', 'خطا در ارتباط با سرور. لطفاً اتصال اینترنت خود را بررسی کنید.');
       }
@@ -129,7 +121,7 @@ export default function LoginScreen() {
           <TouchableOpacity 
             style={styles.loginBtn} 
             onPress={handleLogin}
-            disabled={loading}
+            disabled={loading || !isInitialized}
           >
             {loading ? (
               <ActivityIndicator color="#ffffff" />

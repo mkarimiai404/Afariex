@@ -7,6 +7,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { fetchJson } from '@/lib/api';
+import { getRuntimeApiToken } from '@/lib/auth-runtime';
 import { useAuth } from '@/lib/auth-context';
 import { AppBottomNav } from '@/components/app-bottom-nav';
 
@@ -29,8 +30,9 @@ export default function DashboardScreen() {
   const router = useRouter();
   const rootNavigationState = useRootNavigationState();
   const navigationReady = Boolean(rootNavigationState?.key);
-  const { userId, userToken, userName, isAuthenticated, isInitialized } = useAuth();
+  const { userId, userName, isAuthenticated, isInitialized } = useAuth();
   const [walletBalance, setWalletBalance] = useState(0);
+  const [loadError, setLoadError] = useState(false);
   const unreadCount = 1;
 
   const fetchUserData = React.useCallback(async () => {
@@ -39,18 +41,20 @@ export default function DashboardScreen() {
     }
 
     try {
-      if (!userId || !userToken) {
-        router.replace('/login' as any);
+      const requestToken = getRuntimeApiToken();
+      if (!isAuthenticated || !userId || !requestToken) {
         return;
       }
+
+      setLoadError(false);
 
       const payload = new URLSearchParams();
       payload.append('user_id', userId);
       payload.append('id', userId);
       payload.append('uid', userId);
-      payload.append('api_token', userToken);
-      payload.append('token', userToken);
-      payload.append('user_token', userToken);
+      payload.append('api_token', requestToken);
+      payload.append('token', requestToken);
+      payload.append('user_token', requestToken);
 
       const data = await fetchJson<any>('dashboard.php', {
         method: 'POST',
@@ -70,8 +74,9 @@ export default function DashboardScreen() {
       setWalletBalance(normalizeBalance(balanceValue));
     } catch (error) {
       console.error('Error fetching balance:', error);
+      setLoadError(true);
     }
-  }, [isInitialized, navigationReady, router, userId, userToken]);
+  }, [isAuthenticated, isInitialized, navigationReady, userId]);
 
   useEffect(() => {
     if (!navigationReady || !isInitialized) {
@@ -79,13 +84,10 @@ export default function DashboardScreen() {
     }
 
     if (!isAuthenticated) {
-      router.replace('/login' as any);
       setWalletBalance(0);
       return;
     }
-
-    fetchUserData();
-  }, [fetchUserData, isAuthenticated, isInitialized, navigationReady, router]);
+  }, [isAuthenticated, isInitialized, navigationReady]);
 
   useFocusEffect(
     React.useCallback(() => {
@@ -163,6 +165,14 @@ export default function DashboardScreen() {
           </LinearGradient>
 
           <View style={styles.servicesSection}>
+            {loadError && (
+              <View style={styles.loadError}>
+                <Text style={styles.loadErrorText}>دریافت اطلاعات داشبورد انجام نشد.</Text>
+                <TouchableOpacity onPress={fetchUserData} style={styles.retryButton}>
+                  <Text style={styles.retryButtonText}>تلاش مجدد</Text>
+                </TouchableOpacity>
+              </View>
+            )}
             <Text style={styles.sectionTitle}>خدمات آفاریکس</Text>
 
             <View style={styles.servicesGrid}>
@@ -359,6 +369,10 @@ const styles = StyleSheet.create({
   servicesSection: {
     paddingTop: 4,
   },
+  loadError: { alignItems: 'center', padding: 12, marginBottom: 16, borderRadius: 12, backgroundColor: '#fff4df' },
+  loadErrorText: { fontFamily: 'Vazirmatn', color: '#7c551d', fontSize: 12, marginBottom: 8 },
+  retryButton: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 9, backgroundColor: '#0e9c73' },
+  retryButtonText: { fontFamily: 'Vazirmatn', color: '#fff', fontSize: 12, fontWeight: 'bold' },
   sectionTitle: {
     fontSize: 14,
     fontFamily: 'Vazirmatn',

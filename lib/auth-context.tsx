@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { registerAuthExpiryHandler } from '@/lib/api';
+import { clearRuntimeApiToken, setRuntimeApiToken } from '@/lib/auth-runtime';
 
 const AUTH_STORAGE_KEY = 'afariex_auth_session';
 const LEGACY_AUTH_KEYS = ['api_token', 'userToken', 'user_token', 'user_id', 'userId'] as const;
@@ -16,7 +17,7 @@ type AuthSession = {
 type AuthContextValue = AuthSession & {
   isAuthenticated: boolean;
   isInitialized: boolean;
-  signIn: (session: Partial<AuthSession>) => void;
+  signIn: (session: Partial<AuthSession>) => Promise<void>;
   signOut: () => Promise<void>;
   setUserBalance: (balance: number | null) => void;
 };
@@ -48,6 +49,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     userBalance: null,
   });
   const [isInitialized, setIsInitialized] = useState(false);
+  const pendingSignIns = useRef<{ token: string; resolve: () => void }[]>([]);
 
   useEffect(() => {
     let active = true;
@@ -57,7 +59,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       .catch(() => undefined)
       .finally(() => {
         if (active) {
-          setSession(emptySession());
           setIsInitialized(true);
         }
       });
@@ -65,29 +66,41 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => registerAuthExpiryHandler(async () => {
+    clearRuntimeApiToken();
     setSession(emptySession());
     await clearStoredAuth();
   }), []);
+
+  useEffect(() => {
+    const committedToken = session.userToken;
+    if (!committedToken) return;
+    const ready = pendingSignIns.current.filter((pending) => pending.token === committedToken);
+    pendingSignIns.current = pendingSignIns.current.filter((pending) => pending.token !== committedToken);
+    ready.forEach((pending) => pending.resolve());
+  }, [session]);
+
+  const signIn = useCallback((nextSession: Partial<AuthSession>) => {
+    const token = setRuntimeApiToken(String(nextSession.userToken ?? ''));
+    return new Promise<void>((resolve) => {
+      pendingSignIns.current.push({ token, resolve });
+      setSession((prev) => ({ ...prev, ...nextSession, userToken: token }));
+    });
+  }, []);
+
+  const signOut = useCallback(async () => {
+    clearRuntimeApiToken();
+    setSession(emptySession());
+    pendingSignIns.current.splice(0).forEach((pending) => pending.resolve());
+    await clearStoredAuth();
+  }, []);
 
   const value = useMemo<AuthContextValue>(
     () => ({
       ...session,
       isInitialized,
       isAuthenticated: Boolean(session.userToken?.trim()),
-      signIn: (nextSession) => {
-        setSession((prev) => {
-          const token = typeof nextSession.userToken === 'string' ? nextSession.userToken.trim() : '';
-          return {
-            ...prev,
-            ...nextSession,
-            userToken: token || null,
-          };
-        });
-      },
-      signOut: async () => {
-        setSession(emptySession());
-        await clearStoredAuth();
-      },
+      signIn,
+      signOut,
       setUserBalance: (balance) => {
         setSession((prev) => ({
           ...prev,
@@ -95,7 +108,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }));
       },
     }),
-    [session, isInitialized]
+    [session, isInitialized, signIn, signOut]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

@@ -5,7 +5,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, useWindowDimensions, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { apiUrl, fetchJson } from '@/lib/api';
+import { apiUrl, fetchJson, isAuthenticationResponseError } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 
 const fallback = 'ثبت نشده';
@@ -89,12 +89,8 @@ export default function MyProfileScreen() {
           responseCode,
         });
       }
-      const authenticationFailed = String(status) === '401'
-        || responseCode === 'AUTHENTICATION_REQUIRED'
-        || responseCode === 'AUTHENTICATION_FAILED';
-      if (authenticationFailed) {
+      if (isAuthenticationResponseError(requestError)) {
         setError(false);
-        router.replace('/login' as any);
         return;
       }
       setError(true);

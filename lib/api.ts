@@ -1,4 +1,9 @@
 import { Platform } from 'react-native';
+import {
+  getRuntimeApiToken,
+  isExplicitAuthenticationFailure,
+  requestUsesRuntimeApiToken,
+} from '@/lib/auth-runtime';
 
 type JsonValue = Record<string, any> | any[];
 
@@ -110,6 +115,9 @@ const toNetworkError = (endpoint: string, finalUrl: string, error: unknown) => {
 export const isApiResponseError = (error: unknown): error is ApiResponseError =>
   error instanceof ApiResponseError;
 
+export const isAuthenticationResponseError = (error: unknown): error is ApiResponseError =>
+  isApiResponseError(error) && isExplicitAuthenticationFailure(error.status, error.responseCode);
+
 export const getApiBaseUrl = () => getBaseCandidates()[0];
 
 export const apiUrl = (endpoint: string) =>
@@ -129,6 +137,8 @@ export const fetchJson = async <T = JsonValue>(
     for (const url of urls) {
       try {
         const method = (init?.method || 'GET').toUpperCase();
+        const requestRuntimeToken = getRuntimeApiToken();
+        const authenticatedRequest = requestUsesRuntimeApiToken(init, requestRuntimeToken);
         if (__DEV__) console.log(`[API] request attempt=${attempt} method=${method} url=${url}`);
         const response = await withTimeout(url, init);
         const text = (await response.text()).trim();
@@ -151,7 +161,11 @@ export const fetchJson = async <T = JsonValue>(
         }
 
         if (!response.ok) {
-          if (response.status === 401 || responseCode === 'AUTHENTICATION_REQUIRED' || responseCode === 'AUTHENTICATION_FAILED') {
+          if (
+            authenticatedRequest
+            && getRuntimeApiToken() === requestRuntimeToken
+            && isExplicitAuthenticationFailure(response.status, responseCode)
+          ) {
             void authExpiryHandler?.();
           }
           const responseObject = parsedResponse && !Array.isArray(parsedResponse)

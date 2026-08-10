@@ -182,7 +182,7 @@ export default function RegisterScreen() {
       const returnedPin = String(registration?.data?.pin || '');
       if (!token || !/^\d{4}$/.test(returnedPin)) throw new Error('registration session unavailable');
 
-      signIn({
+      await signIn({
         userToken: token,
         userMobile: normalizedMobile,
         userName: String(registration?.data?.full_name || fullName.trim()),

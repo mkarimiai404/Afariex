@@ -6,6 +6,7 @@ import { StyleSheet, View } from 'react-native';
 import Toast from 'react-native-toast-message';
 
 import { AuthProvider, useAuth } from '@/lib/auth-context';
+import { getRuntimeApiToken } from '@/lib/auth-runtime';
 import { applyGlobalFont, PROJECT_FONT_FAMILIES } from '@/lib/apply-global-font';
 import { toastConfig } from '@/lib/toast';
 
@@ -33,26 +34,31 @@ function AuthRouteBoundary({ children }: { children: React.ReactNode }) {
   const initialEntryPending = useRef(true);
   const navigationReady = Boolean(navigationState?.key);
   const publicRoute = PUBLIC_AUTH_PATHS.has(pathname);
-  const coldStartRootRedirect = navigationReady && isInitialized && initialEntryPending.current && !isAuthenticated && pathname === '/';
-  const redirectingToLogin = navigationReady && isInitialized && !isAuthenticated && (!publicRoute || coldStartRootRedirect);
+  const authStatus = !isInitialized || (!isAuthenticated && Boolean(getRuntimeApiToken()))
+    ? 'initializing'
+    : isAuthenticated
+      ? 'authenticated'
+      : 'unauthenticated';
+  const coldStartRootRedirect = navigationReady && initialEntryPending.current && authStatus === 'unauthenticated' && pathname === '/';
+  const redirectingToLogin = navigationReady && authStatus === 'unauthenticated' && (!publicRoute || coldStartRootRedirect);
 
   useEffect(() => {
-    if (!navigationReady || !isInitialized) return;
+    if (!navigationReady || authStatus === 'initializing') return;
     initialEntryPending.current = false;
-    if (__DEV__) console.log('[Auth] protected-route decision', { pathname, isAuthenticated, publicRoute });
+    if (__DEV__) console.log('[Auth] protected-route decision', { pathname, authStatus, publicRoute });
     if (redirectingToLogin) router.replace('/login' as any);
-  }, [isAuthenticated, isInitialized, navigationReady, pathname, publicRoute, redirectingToLogin, router]);
+  }, [authStatus, navigationReady, pathname, publicRoute, redirectingToLogin, router]);
 
   useEffect(() => {
-    if (navigationReady && isInitialized && !redirectingToLogin) {
+    if (navigationReady && authStatus !== 'initializing' && !redirectingToLogin) {
       SplashScreen.hideAsync().catch(() => undefined);
     }
-  }, [isInitialized, navigationReady, redirectingToLogin]);
+  }, [authStatus, navigationReady, redirectingToLogin]);
 
   return (
     <View style={styles.routeContainer}>
       {children}
-      {(!isInitialized || redirectingToLogin) && <View style={styles.routeShield} pointerEvents="auto" />}
+      {(authStatus === 'initializing' || redirectingToLogin) && <View style={styles.routeShield} pointerEvents="auto" />}
     </View>
   );
 }

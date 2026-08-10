@@ -5,7 +5,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, ScrollView, Share, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { fetchJson } from '@/lib/api';
+import { fetchJson, isAuthenticationResponseError } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { showError, showSuccess } from '@/lib/toast';
 
@@ -64,12 +64,7 @@ export default function CustomersScreen() {
       if (result?.success !== true || !result.data) throw new Error('Invalid referrals response');
       setData({ ...fallbackData, ...result.data, customers: Array.isArray(result.data.customers) ? result.data.customers : [] });
     } catch (requestError) {
-      const status = (requestError as Error & { status?: number }).status;
-      const responseCode = (requestError as Error & { responseCode?: string }).responseCode;
-      if (status === 401 || responseCode === 'AUTHENTICATION_REQUIRED' || responseCode === 'AUTHENTICATION_FAILED') {
-        router.replace('/login' as any);
-        return;
-      }
+      if (isAuthenticationResponseError(requestError)) return;
       setError(true);
     } finally {
       setLoading(false);

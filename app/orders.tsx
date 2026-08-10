@@ -3,7 +3,7 @@ import { Stack, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { fetchJson } from '@/lib/api';
+import { fetchJson, isAuthenticationResponseError } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 
 type ActivityOrder = {
@@ -67,12 +67,7 @@ export default function OrdersScreen() {
       setOrders(Array.isArray(result.data.orders) ? result.data.orders : []);
       setLatestActivity(result.data.latest_activity || null);
     } catch (requestError) {
-      const status = (requestError as Error & { status?: number }).status;
-      const responseCode = (requestError as Error & { responseCode?: string }).responseCode;
-      if (status === 401 || responseCode === 'AUTHENTICATION_REQUIRED' || responseCode === 'AUTHENTICATION_FAILED') {
-        router.replace('/login' as any);
-        return;
-      }
+      if (isAuthenticationResponseError(requestError)) return;
       setError(true);
     } finally {
       setLoading(false);
