@@ -71,6 +71,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $mobile = (string)($userRow['mobile'] ?? '');
             $verification = verification_state($userId, true);
 
+            if ($manualAction === 'remittance' && $verification['daily_limit'] !== null) {
+                $usedToday = daily_transaction_usage($userId, true);
+                if ((float)$amountInput > max(0, (float)$verification['daily_limit'] - $usedToday)) {
+                    db()->rollBack();
+                    flash('error', 'سقف روزانه حواله این کاربر تکمیل شده است.');
+                    header('Location: users.php?page=' . $page);
+                    exit;
+                }
+            }
+            if ($manualAction === 'remittance' && $verification['custom_remittance_limit'] !== null && (float)$amountInput > max(0, (float)$verification['custom_remittance_limit'] - daily_remittance_usage($userId))) {
+                db()->rollBack();
+                flash('error', 'سقف اختصاصی انتقال وجه این کاربر تکمیل شده است.');
+                header('Location: users.php?page=' . $page);
+                exit;
+            }
+
             if ($manualAction === 'decrease' && $verification['withdrawal_limit'] !== null && (float)$amountInput > (float)$verification['withdrawal_limit']) {
                 db()->rollBack();
                 flash('error', 'سقف برداشت سطح فعلی کاربر ۵,۰۰۰,۰۰۰ تومان است.');
@@ -225,6 +241,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $pinCode = trim($_POST['pin_code'] ?? '');
         $password = trim($_POST['password'] ?? '');
         $role = trim($_POST['role'] ?? 'viewer');
+        $customLimitInput = trim((string)($_POST['custom_remittance_limit'] ?? ''));
+        $customLimit = null;
+        if ($customLimitInput !== '') {
+            if (!preg_match('/^(?:0|[1-9]\d*)(?:\.\d+)?$/', $customLimitInput) || (float)$customLimitInput <= 0) {
+                flash('error', 'سقف حواله باید یک مبلغ مثبت باشد یا خالی بماند.');
+                header('Location: users.php?page=' . $page);
+                exit;
+            }
+            $customLimit = $customLimitInput;
+        }
         if (!preg_match('/^\d{4}$/', $pinCode)) {
             flash('error', 'پین کد باید دقیقاً ۴ رقم عددی باشد.');
         } elseif ($mobile === '' || $password === '' || !in_array($role, ['admin', 'editor', 'viewer'], true)) {
@@ -234,6 +260,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $stmt = db()->prepare('INSERT INTO users (mobile, first_name, last_name, pin_code, password, role, created_at) VALUES (?, ?, ?, ?, ?, ?, NOW())');
             $stmt->execute([$mobile, $firstName, $lastName, $pinCode, $hash, $role]);
             $newId = (int)db()->lastInsertId();
+            $limitStmt = db()->prepare('INSERT INTO user_verification_levels (user_id, level, custom_remittance_limit, updated_at) VALUES (?, \'bronze\', ?, NOW()) ON DUPLICATE KEY UPDATE custom_remittance_limit = VALUES(custom_remittance_limit), updated_at = NOW()');
+            $limitStmt->execute([$newId, $customLimit]);
             log_activity('create', 'users', $newId, "ایجاد کاربر: {$mobile}");
             flash('success', 'کاربر جدید ثبت شد.');
         }
@@ -250,6 +278,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $pinCode = trim($_POST['pin_code'] ?? '');
         $role = trim($_POST['role'] ?? 'viewer');
         $newPassword = trim($_POST['new_password'] ?? '');
+        $customLimitInput = trim((string)($_POST['custom_remittance_limit'] ?? ''));
+        $customLimit = null;
+        if ($customLimitInput !== '') {
+            if (!preg_match('/^(?:0|[1-9]\d*)(?:\.\d+)?$/', $customLimitInput) || (float)$customLimitInput <= 0) {
+                flash('error', 'سقف حواله باید یک مبلغ مثبت باشد یا خالی بماند.');
+                header('Location: users.php?page=' . $page);
+                exit;
+            }
+            $customLimit = $customLimitInput;
+        }
         if (!preg_match('/^\d{4}$/', $pinCode)) {
             flash('error', 'پین کد باید دقیقاً ۴ رقم عددی باشد.');
         } elseif ($id <= 0 || $mobile === '' || !in_array($role, ['admin', 'editor', 'viewer'], true)) {
@@ -263,6 +301,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt = db()->prepare('UPDATE users SET mobile = ?, first_name = ?, last_name = ?, pin_code = ?, role = ? WHERE id = ?');
                 $stmt->execute([$mobile, $firstName, $lastName, $pinCode, $role, $id]);
             }
+            $limitStmt = db()->prepare('INSERT INTO user_verification_levels (user_id, level, custom_remittance_limit, updated_at) VALUES (?, \'bronze\', ?, NOW()) ON DUPLICATE KEY UPDATE custom_remittance_limit = VALUES(custom_remittance_limit), updated_at = NOW()');
+            $limitStmt->execute([$id, $customLimit]);
             log_activity('update', 'users', $id, "ویرایش کاربر: {$mobile}");
             flash('success', 'کاربر ویرایش شد.');
         }
@@ -513,6 +553,9 @@ render_page_start('مدیریت کاربران', 'users');
                         data-balance="<?= e(admin_balance_with_unit($row['balance'] ?? null)) ?>"
                         data-pin_code="<?= e($row['pin_code'] ?? '') ?>"
                         data-role="<?= e($row['role']) ?>"
+                        data-custom_remittance_limit="<?= $rowVerification['custom_remittance_limit'] === null ? '' : e((string)$rowVerification['custom_remittance_limit']) ?>"
+                        data-level_remittance_limit="<?= e((string)$rowVerification['daily_limit']) ?>"
+                        data-remittance_used_today="<?= e((string)daily_remittance_usage((int)$row['id'])) ?>"
                         onclick="openEditUser(this)">ویرایش</button>
               <?php endif; ?>
               <?php if (can('delete')): ?>
@@ -554,6 +597,15 @@ render_page_start('مدیریت کاربران', 'users');
           <select class="select" name="role"><option>viewer</option><option>editor</option><option>admin</option></select>
         </div>
         <div class="col-4"></div>
+        <?php $defaultVerification = verification_level_definitions()['bronze']; ?>
+        <div class="col-12" style="padding:14px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;">
+          <h5 style="margin:0 0 12px;">تنظیمات انتقال وجه</h5>
+          <div class="form-grid">
+            <div class="col-6"><label class="field-label">سقف پیش‌فرض سطح کاربر</label><div><?= e(number_format((float)$defaultVerification['daily_limit'])) ?> تومان</div></div>
+            <div class="col-6"><label class="field-label">سقف اختصاصی انتقال وجه</label><input class="input" name="custom_remittance_limit" type="number" min="0.01" step="0.01" dir="ltr"></div>
+            <div class="col-12"><small>در صورت خالی بودن، سقف پیش‌فرض سطح کاربر اعمال می‌شود.</small></div>
+          </div>
+        </div>
         <div class="col-12 actions"><button class="btn btn-primary">ثبت</button></div>
       </form>
     </div>
@@ -631,6 +683,16 @@ render_page_start('مدیریت کاربران', 'users');
           <select class="select" id="editUserRole" name="role"><option>viewer</option><option>editor</option><option>admin</option></select>
         </div>
         <div class="col-4"></div>
+        <div class="col-12" id="editUserRemittanceSettings" style="padding:14px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;">
+          <h5 style="margin:0 0 12px;">تنظیمات انتقال وجه</h5>
+          <div class="form-grid">
+            <div class="col-6"><label class="field-label">سقف روزانه سطح کاربر</label><div id="editUserNormalRemittanceLimit">—</div></div>
+            <div class="col-6"><label class="field-label">سقف اختصاصی انتقال وجه</label><input class="input" id="editUserCustomRemittanceLimit" name="custom_remittance_limit" type="number" min="0.01" step="0.01" dir="ltr"></div>
+            <div class="col-6"><label class="field-label">مصرف انتقال وجه امروز</label><div id="editUserRemittanceUsedToday">—</div></div>
+            <div class="col-6"><label class="field-label">باقیمانده سقف اختصاصی</label><div id="editUserRemittanceRemaining">—</div></div>
+            <div class="col-12"><label style="display:flex;align-items:center;gap:8px;"><input type="checkbox" id="editUserUseDefaultRemittanceLimit"> استفاده از سقف پیش‌فرض سطح کاربر</label><small id="editUserCustomRemittanceState">تنظیم نشده - استفاده از سقف پیش‌فرض سطح کاربر</small></div>
+          </div>
+        </div>
         <div class="col-12 actions"><button class="btn btn-primary">ذخیره</button></div>
       </form>
     </div>
@@ -647,7 +709,23 @@ render_page_start('مدیریت کاربران', 'users');
     document.getElementById('editUserBalance').textContent = 'موجودی فعلی حساب: ' + (btn.dataset.balance || '—');
     document.getElementById('editUserPinCode').value = btn.dataset.pin_code || '';
     document.getElementById('editUserRole').value = btn.dataset.role || 'viewer';
+    document.getElementById('editUserCustomRemittanceLimit').value = btn.dataset.custom_remittance_limit || '';
+    const normal = Number(btn.dataset.level_remittance_limit || 0);
+    const custom = btn.dataset.custom_remittance_limit || '';
+    document.getElementById('editUserNormalRemittanceLimit').textContent = normal > 0 ? normal.toLocaleString('en-US') + ' تومان' : 'تنظیم نشده';
+    const used = Number(btn.dataset.remittance_used_today || 0);
+    document.getElementById('editUserRemittanceUsedToday').textContent = used.toLocaleString('en-US') + ' تومان';
+    document.getElementById('editUserRemittanceRemaining').textContent = custom ? Math.max(0, Number(custom) - used).toLocaleString('en-US') + ' تومان' : '—';
+    document.getElementById('editUserUseDefaultRemittanceLimit').checked = !custom;
+    document.getElementById('editUserCustomRemittanceState').textContent = custom ? '' : 'تنظیم نشده - استفاده از سقف پیش‌فرض سطح کاربر';
+    document.getElementById('editUserCustomRemittanceLimit').disabled = !custom;
   }
+
+  document.getElementById('editUserUseDefaultRemittanceLimit')?.addEventListener('change', function () {
+    const input = document.getElementById('editUserCustomRemittanceLimit');
+    if (this.checked) input.value = '';
+    input.disabled = this.checked;
+  });
 
   function openManualOperations(btn) {
     const modal = document.getElementById('manualOperationsModal');

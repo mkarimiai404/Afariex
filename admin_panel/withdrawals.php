@@ -133,6 +133,15 @@ render_page_start('مدیریت برداشت‌ها', 'withdrawals');
   .withdrawal-financial-row.current { margin-top:3px;padding-top:8px;border-top:1px solid #cbd5e1;font-size:13px;color:#047857;font-weight:800; }
   .withdrawal-financial-row.current strong { color:#047857;font-size:14px; }
   .withdrawal-reservation-note { margin:8px 0 0;color:#92400e;background:#fffbeb;border-radius:8px;padding:7px;font-size:11px;line-height:1.7; }
+  /* The table is RTL, so its final (operations) column is on the left edge. */
+  .withdrawal-table-wrap { overflow-x:auto !important; overflow-y:visible; max-width:100%; direction:rtl; -webkit-overflow-scrolling:touch; scrollbar-width:auto; }
+  .withdrawal-table { min-width:1550px; direction:rtl; }
+  .withdrawal-table th, .withdrawal-table td { vertical-align:top; }
+  .withdrawal-operations-heading, .withdrawal-operations { position:sticky; left:0; z-index:4; min-width:270px; width:270px; background:#fff !important; box-shadow:4px 0 10px rgba(15,23,42,.10); }
+  .withdrawal-operations-heading { z-index:5; background:#f8fafc !important; }
+  .withdrawal-operations .withdrawal-status-form { min-width:238px; }
+  .withdrawal-operations .btn, .withdrawal-operations .select { max-width:100%; }
+  @media (max-width:1100px) { .withdrawal-table { min-width:1450px; } .withdrawal-operations-heading, .withdrawal-operations { min-width:255px; width:255px; } }
   @media (max-width:840px) { .withdrawal-toolbar > * { width:100%; } .withdrawal-financial-summary { min-width:210px; } }
 </style>
 
@@ -154,9 +163,9 @@ render_page_start('مدیریت برداشت‌ها', 'withdrawals');
     </select>
     <button class="btn btn-light" type="submit">فیلتر</button>
   </form>
-  <div class="table-wrap">
-    <table>
-      <thead><tr><th>شناسه</th><th>کاربر</th><th>موبایل</th><th>مبلغ درخواست برداشت</th><th>خلاصه مالی حساب</th><th>شماره کارت</th><th>صاحب کارت</th><th>تاریخ ثبت</th><th>منبع</th><th>وضعیت</th><th>عملیات</th></tr></thead>
+  <div class="withdrawal-table-wrap">
+    <table class="withdrawal-table">
+      <thead><tr><th>شناسه</th><th>کاربر</th><th>موبایل</th><th>مبلغ درخواست برداشت</th><th>خلاصه مالی حساب</th><th>شماره کارت</th><th>صاحب کارت</th><th>تاریخ ثبت</th><th>منبع</th><th>وضعیت</th><th class="withdrawal-operations-heading">عملیات</th></tr></thead>
       <tbody>
       <?php if (!$rows): ?><tr><td colspan="11" style="text-align:center">درخواست برداشتی یافت نشد.</td></tr><?php endif; ?>
       <?php foreach ($rows as $row): $managedRequest = in_array((string)($row['request_source'] ?? ''), ['customer', 'admin'], true); ?>
@@ -174,7 +183,7 @@ render_page_start('مدیریت برداشت‌ها', 'withdrawals');
           <td><?= e(jalali_date((string)$row['created_at'])) ?></td>
           <td><?= ($row['request_source'] ?? '') === 'admin' ? 'مدیریت / دستی' : (($row['request_source'] ?? '') === 'customer' ? 'کاربر' : 'قدیمی / نامشخص') ?></td>
           <td><span class="withdrawal-status <?= e((string)$row['status']) ?>"><?= e($withdrawalStatusLabels[(string)$row['status']] ?? (string)$row['status']) ?></span></td>
-          <td>
+          <td class="withdrawal-operations">
             <?php $statusOptions = withdrawal_admin_status_options((string)$row['status']); ?>
             <?php if ($managedRequest && $statusOptions !== []): ?>
               <form method="post" class="withdrawal-status-form" data-current-status="<?= e((string)$row['status']) ?>" onsubmit="return confirmWithdrawalStatusChange(this)">

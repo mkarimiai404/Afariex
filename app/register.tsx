@@ -26,6 +26,7 @@ const codeMessage: Record<string, string> = {
   REGISTRATION_OTP_INVALID: 'تأیید ثبت‌نام معتبر نیست.',
   OTP_SEND_FAILED: 'ارسال کد تأیید در حال حاضر امکان‌پذیر نیست.',
   PIN_SYSTEM_UNAVAILABLE: 'ساخت حساب در حال حاضر امکان‌پذیر نیست.',
+  REGISTRATION_FAILED: 'ثبت‌نام در حال حاضر انجام نشد. لطفاً کمی بعد دوباره تلاش کنید.',
   CONSENT_REQUIRED: 'برای ادامه ثبتنام، ابتدا قوانین و سیاست حفظ حریم خصوصی را مطالعه و تأیید کنید.',
   CONSENT_STORAGE_UNAVAILABLE: 'ثبت‌نام در حال حاضر امکان‌پذیر نیست.',
 };

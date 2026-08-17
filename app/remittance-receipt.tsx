@@ -2,6 +2,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Print from 'expo-print';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import * as Sharing from 'expo-sharing';
+import * as Clipboard from 'expo-clipboard';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -9,9 +10,9 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { RemittanceReceiptView } from '@/components/remittance-receipt-view';
 import { fetchJson } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
-import { RemittanceReceiptModel } from '@/lib/remittance-receipt';
+import { buildRemittanceReceiptText, RemittanceReceiptModel } from '@/lib/remittance-receipt';
 import { createRemittanceReceiptPdf } from '@/lib/remittance-receipt-native';
-import { showError } from '@/lib/toast';
+import { showError, showSuccess } from '@/lib/toast';
 
 type ReceiptOrder = {
   id: string;
@@ -115,6 +116,12 @@ export default function RemittanceReceiptScreen() {
     }
   };
 
+  const copyReceipt = async () => {
+    if (!receipt) return;
+    await Clipboard.setStringAsync(buildRemittanceReceiptText(receipt));
+    showSuccess('موفق', 'رسید کپی شد');
+  };
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <Stack.Screen options={{ headerShown: false }} />
@@ -130,6 +137,9 @@ export default function RemittanceReceiptScreen() {
         <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
           <RemittanceReceiptView receipt={receipt} />
           <View style={styles.actions}>
+            <TouchableOpacity style={[styles.action, styles.secondary]} onPress={copyReceipt} disabled={busyAction !== null}>
+              <Ionicons name="copy-outline" size={20} color="#0b8f72" /><Text style={styles.secondaryText}>کپی رسید</Text>
+            </TouchableOpacity>
             <TouchableOpacity style={[styles.action, styles.primary]} onPress={downloadPdf} disabled={busyAction !== null}>
               {busyAction === 'pdf' ? <ActivityIndicator color="#fff" /> : <><Ionicons name="download-outline" size={20} color="#fff" /><Text style={styles.primaryText}>دریافت PDF</Text></>}
             </TouchableOpacity>

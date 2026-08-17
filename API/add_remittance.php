@@ -100,7 +100,13 @@ try {
     $dailyRemaining = max(0, (float)$dailyLimit - $dailyUsage);
     if ($amountToman > $dailyRemaining) {
         db()->rollBack();
-        json_response(['success' => false, 'code' => 'DAILY_TRANSACTION_LIMIT_EXCEEDED', 'message' => 'سقف تراکنش روزانه سطح فعلی شما تکمیل شده است. برای افزایش سقف، سطح کاربری خود را ارتقاء دهید.', 'data' => ['level' => $verification['level'], 'daily_limit' => $dailyLimit, 'used_today' => $dailyUsage, 'remaining_today' => $dailyRemaining, 'requested_amount' => $amountToman, 'upgrade_required' => true]], 422);
+        json_response(['success' => false, 'code' => 'DAILY_TRANSACTION_LIMIT_EXCEEDED', 'message' => 'سقف انتقال وجه مجاز برای حساب شما تکمیل شده است.', 'data' => ['level' => $verification['level'], 'daily_limit' => $dailyLimit, 'combined_daily_limit' => $dailyLimit, 'used_today' => $dailyUsage, 'remaining_today' => $dailyRemaining, 'requested_amount' => $amountToman, 'upgrade_required' => false]], 422);
+    }
+    $remittanceUsage = daily_remittance_usage($userId);
+    $customRemittanceLimit = $verification['custom_remittance_limit'];
+    if ($customRemittanceLimit !== null && $amountToman > max(0, (float)$customRemittanceLimit - $remittanceUsage)) {
+        db()->rollBack();
+        json_response(['success' => false, 'code' => 'CUSTOM_REMITTANCE_LIMIT_EXCEEDED', 'message' => 'سقف اختصاصی انتقال وجه مجاز برای حساب شما تکمیل شده است.', 'data' => ['custom_remittance_limit' => $customRemittanceLimit, 'remittance_used_today' => $remittanceUsage, 'remaining_remittance_today' => max(0, (float)$customRemittanceLimit - $remittanceUsage), 'requested_amount' => $amountToman]], 422);
     }
 
     if ($amountToman > $availableFunds) {
@@ -128,6 +134,19 @@ try {
 
     $remittanceId = (int)db()->lastInsertId();
 
+    // Read the committed receipt fields from the saved row and the same agency
+    // address source used by orders/history. Client supplied addresses are not
+    // authoritative.
+    $createdStmt = db()->prepare('SELECT r.created_at, r.status, r.sender, r.receiver,
+            r.amount_afghani, r.agency,
+            (SELECT a.address FROM agencies a WHERE BINARY a.name = BINARY r.agency ORDER BY a.id DESC LIMIT 1) AS agency_address
+        FROM remittances r WHERE r.id = ? AND r.user_id = ? LIMIT 1');
+    $createdStmt->execute([$remittanceId, $userId]);
+    $savedRemittance = $createdStmt->fetch();
+    if (!$savedRemittance) {
+        throw new RuntimeException('Committed remittance could not be reloaded.');
+    }
+
     $balanceStmt = db()->prepare('UPDATE users SET balance = balance - ? WHERE id = ? AND balance + overdraft_limit >= ?');
     $balanceStmt->execute([$amountToman, $userId, $amountToman]);
     if ($balanceStmt->rowCount() !== 1) {
@@ -136,6 +155,9 @@ try {
 
     db()->commit();
 
+    $agencyAddress = trim((string)($savedRemittance['agency_address'] ?? ''));
+    $savedAgency = trim((string)($savedRemittance['agency'] ?? $agency));
+
     json_response([
         'success' => true,
         'message' => 'حواله با موفقیت ثبت شد.',
@@ -143,8 +165,14 @@ try {
             'remittance_id' => $remittanceId,
             'tracking_number' => $remittanceId,
             'code' => $remittanceId,
-            'agency_name' => $agency,
-            'agency_address' => '',
+            'agency_name' => $savedAgency,
+            'agency_address' => $agencyAddress,
+            'status' => strtolower(trim((string)$savedRemittance['status'])),
+            'created_at' => $savedRemittance['created_at'] ?: null,
+            'sender' => trim((string)$savedRemittance['sender']),
+            'receiver' => trim((string)$savedRemittance['receiver']),
+            'amount_afghani' => (float)$savedRemittance['amount_afghani'],
+            'destination' => $agencyAddress !== '' ? $agencyAddress : $savedAgency,
         ],
     ]);
 } catch (Throwable $e) {

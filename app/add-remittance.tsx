@@ -24,7 +24,7 @@ import { apiUrl } from '@/lib/api';
 import { showError, showSuccess } from '@/lib/toast';
 import { AppBottomNav } from '@/components/app-bottom-nav';
 import { RemittanceReceiptView } from '@/components/remittance-receipt-view';
-import { customerTrackingNumber, RemittanceReceiptModel } from '@/lib/remittance-receipt';
+import { buildRemittanceReceiptText, customerTrackingNumber, RemittanceReceiptModel } from '@/lib/remittance-receipt';
 import { createRemittanceReceiptPdf } from '@/lib/remittance-receipt-native';
 
 type Agency = {
@@ -57,16 +57,12 @@ const normalizeAmountInput = (value: string) => {
     : integerPart.replace(/\D/g, '');
 };
 
-const getJalaliDate = () => {
-  try {
-    return new Intl.DateTimeFormat('fa-IR-u-ca-persian', {
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric',
-    }).format(new Date());
-  } catch {
-    return new Date().toLocaleDateString('fa-IR');
-  }
+const formatReceiptDate = (value: string) => {
+  const date = new Date(value.replace(' ', 'T'));
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat('fa-IR-u-ca-persian', {
+    year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit',
+  }).format(date);
 };
 
 export default function AddRemittanceScreen() {
@@ -207,6 +203,12 @@ export default function AddRemittanceScreen() {
     }
   };
 
+  const handleCopyReceipt = async () => {
+    if (!completedReceipt) return;
+    await Clipboard.setStringAsync(buildRemittanceReceiptText(completedReceipt));
+    showSuccess('موفق', 'رسید کپی شد');
+  };
+
   const handleSubmit = async () => {
     if (submitting || completedRemittanceId) return;
 
@@ -293,14 +295,15 @@ export default function AddRemittanceScreen() {
         setCompletedRemittanceId(committedRemittanceId);
         setLastTrackingCode(committedRemittanceId);
         setLastAgencyName(selectedAgency?.name || '');
+        const receiptData = result?.data || {};
         setCompletedReceipt({
-          trackingNumber: committedRemittanceId,
-          date: getJalaliDate(),
-          sender: senderName.trim(),
-          receiver: receiverName.trim(),
-          amountAfghani: amountAfghani.trim(),
-          destination: selectedAgency?.address?.trim() || selectedAgency?.name || '',
-          status: 'pending',
+          trackingNumber: String(receiptData.tracking_number ?? committedRemittanceId),
+          date: receiptData.created_at ? formatReceiptDate(String(receiptData.created_at)) : '',
+          sender: String(receiptData.sender ?? senderName.trim()),
+          receiver: String(receiptData.receiver ?? receiverName.trim()),
+          amountAfghani: receiptData.amount_afghani ?? amountAfghani.trim(),
+          destination: String(receiptData.destination ?? receiptData.agency_address ?? ''),
+          status: String(receiptData.status ?? 'pending'),
         });
         const newBalance =
           result?.new_balance ??
@@ -316,7 +319,9 @@ export default function AddRemittanceScreen() {
           setUserBalance(nextBalance);
         }
         
-        setSuccessModalVisible(true);
+        // The committed response is the receipt source; opening it is local UI
+        // state only and must never submit the remittance again.
+        setReceiptModalVisible(true);
         showSuccess('موفق', 'حواله با موفقیت ثبت شد.');
       } else {
         showError('خطا', result?.message || 'خطا در ثبت حواله.');
@@ -529,6 +534,9 @@ export default function AddRemittanceScreen() {
           <ScrollView contentContainerStyle={styles.receiptContent} showsVerticalScrollIndicator={false}>
             {completedReceipt && <RemittanceReceiptView receipt={completedReceipt} />}
             <View style={styles.receiptActions}>
+              <TouchableOpacity style={[styles.receiptAction, styles.receiptSecondary]} onPress={handleCopyReceipt} disabled={receiptBusyAction !== null}>
+                <Ionicons name="copy-outline" size={20} color="#0b8f72" /><Text style={styles.receiptSecondaryText}>کپی رسید</Text>
+              </TouchableOpacity>
               <TouchableOpacity style={[styles.receiptAction, styles.receiptPrimary]} onPress={handleDownloadPdf} disabled={receiptBusyAction !== null}>
                 {receiptBusyAction === 'pdf' ? <ActivityIndicator color="#fff" /> : <><Ionicons name="download-outline" size={20} color="#fff" /><Text style={styles.receiptPrimaryText}>دریافت PDF</Text></>}
               </TouchableOpacity>

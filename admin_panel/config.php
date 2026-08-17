@@ -110,6 +110,7 @@ function ensure_verification_schema(): void
             phone_verified TINYINT(1) NOT NULL DEFAULT 0,
             phone_verified_at DATETIME NULL,
             withdrawal_limit DECIMAL(20,2) NULL,
+            custom_remittance_limit DECIMAL(20,2) NULL,
             updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     ');
@@ -166,7 +167,7 @@ function ensure_verification_schema(): void
 function verification_state(int $userId, bool $forUpdate = false): array
 {
     ensure_verification_schema();
-    $sql = 'SELECT level, phone_verified, phone_verified_at, withdrawal_limit FROM user_verification_levels WHERE user_id = ?';
+    $sql = 'SELECT level, phone_verified, phone_verified_at, withdrawal_limit, custom_remittance_limit FROM user_verification_levels WHERE user_id = ?';
     if ($forUpdate) $sql .= ' FOR UPDATE';
     $stmt = db()->prepare($sql);
     $stmt->execute([$userId]);
@@ -194,6 +195,7 @@ function verification_state(int $userId, bool $forUpdate = false): array
         'email_verified' => $emailVerified,
         'bronze_eligible' => !empty($row['phone_verified']) || $emailVerified,
         'daily_limit' => $definition['daily_limit'],
+        'custom_remittance_limit' => $row['custom_remittance_limit'] !== null ? (float)$row['custom_remittance_limit'] : null,
         'withdrawal_limit' => $definition['daily_limit'],
         'next_level' => $definition['next'],
         'next_level_documents' => $definition['documents'],
@@ -222,6 +224,14 @@ function daily_transaction_usage(int $userId, bool $forUpdate = false): float
     return $total;
 }
 
+function daily_remittance_usage(int $userId): float
+{
+    if (!table_exists('remittances')) return 0.0;
+    $stmt = db()->prepare("SELECT COALESCE(SUM(amount_toman), 0) FROM remittances WHERE user_id = ? AND status IN ('pending', 'processing', 'approved', 'paid') AND DATE(created_at) = CURDATE()");
+    $stmt->execute([$userId]);
+    return (float)$stmt->fetchColumn();
+}
+
 function daily_transaction_summary(int $userId, ?array $state = null): array
 {
     $state ??= verification_state($userId);
@@ -231,6 +241,7 @@ function daily_transaction_summary(int $userId, ?array $state = null): array
         'daily_limit' => $limit,
         'used_today' => $used,
         'remaining_today' => $limit === null ? null : max(0, (float)$limit - $used),
+        'remittance_used_today' => daily_remittance_usage($userId),
     ];
 }
 

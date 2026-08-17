@@ -65,7 +65,11 @@ export const formatPersianAmount = (input: number | string) => {
 
 export const customerRemittanceStatus = (status: string) => {
   const normalized = status.trim().toLowerCase();
-  if (['approved', 'paid', 'completed', 'ready'].includes(normalized)) return 'آماده پرداخت';
+  // The remittance workflow stores new requests as pending; only an explicit
+  // ready state means the recipient can collect the money.
+  if (normalized === 'ready') return 'آماده پرداخت';
+  if (normalized === 'approved') return 'تایید شده';
+  if (normalized === 'paid') return 'پرداخت شده';
   if (['rejected', 'cancelled', 'canceled'].includes(normalized)) return 'نیازمند پیگیری';
   return 'در حال پردازش';
 };
@@ -120,6 +124,11 @@ export const formatRemittanceReceipt = (data: RemittanceReceiptModel): Remittanc
   ],
   footer: 'AfaraX Exchange',
 });
+
+export const buildRemittanceReceiptText = (data: RemittanceReceiptModel) => {
+  const receipt = formatRemittanceReceipt(data);
+  return [receipt.brand, '', `✅ تأییدیه شماره حواله: ${receipt.tracking}`, ` تاریخ: ${receipt.date}`, ` فرستنده: ${receipt.sender}`, ` گیرنده: ${receipt.receiver}`, ` مبلغ: ${receipt.amount} «${receipt.amountWords}» افغانی`, ` مقصد: ${receipt.destination}`, `وضعیت: ${receipt.customerStatus}`, '', ...receipt.notice, '', receipt.footer].join('\n');
+};
 
 export const buildRemittanceReceiptHtml = (data: RemittanceReceiptData) => {
   const receipt = formatRemittanceReceipt(data);
